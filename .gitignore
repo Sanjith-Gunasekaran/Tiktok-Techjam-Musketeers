@@ -1,0 +1,11 @@
+test/
+train/
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+checkpoints/
+*.pt
+*.pth
+.cache/
+reports/
