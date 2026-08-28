@@ -1,3 +1,4 @@
 datasets
+kagglehub
 Pillow
 pyarrow
