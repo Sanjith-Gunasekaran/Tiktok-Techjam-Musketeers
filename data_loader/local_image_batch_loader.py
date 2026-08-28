@@ -152,6 +152,7 @@ def main() -> None:
     batch = SIDDataset().get_random_batch(
         args.batch_size, args.split, args.data_dir, args.seed
     )
+
     for sample in batch:
         print(
             f"{sample['img_id']}: {sample['width']}x{sample['height']}, "
