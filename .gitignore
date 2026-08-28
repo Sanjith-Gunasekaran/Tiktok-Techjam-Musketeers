@@ -1,0 +1,6 @@
+test/
+train/
+
+.venv/
+.cache/
+**/__pycache__/
