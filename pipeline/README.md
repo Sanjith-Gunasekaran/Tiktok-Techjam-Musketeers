@@ -16,7 +16,7 @@ augment = RandomAugment(probability=0.5, seed=42)
 degraded = augment(pil_image)
 
 # Evaluation: the brief's exact parameter grid, deterministic.
-for name, transform in EVAL_GRID.items():   # clean, jpeg_q90 ... crop_80 (16 entries)
+for name, transform in EVAL_GRID.items():   # clean through compound chain (17 cells)
     score_model_on(transform(pil_image))
 ```
 
@@ -114,3 +114,30 @@ augmentation change. `original_label` is retained for provenance, but is only
 for the model's frozen SRM layer—it is not yet SRM-filtered. Freeze
 `test_fraction` before experiments; changing it changes the holdout and
 invalidates comparisons. This is one stable split, not cross-validation.
+
+## `pipeline/evaluate.py` — clean-vs-transformed report
+
+The evaluator accepts the full loader bundle so it can select the frozen test
+partition itself. For every grid cell it applies the transform before both
+views, calls `model(dino_batch, patch_batch)`, and writes accuracy/AUC plus
+their change from clean to CSV and Markdown.
+
+```python
+from pipeline import evaluate_model
+
+report = evaluate_model(model, loaders, output_dir="evaluation")
+print(report.csv_path, report.markdown_path)
+```
+
+The model must return one synthetic-class probability per image (`[B]` or
+`[B, 1]`). Use `from_logits=True` for logits. The classification threshold is
+fixed at `0.5` by default; select any other threshold on validation before
+calling the evaluator. Never tune the model or threshold from this test table.
+
+Each `report.rows` entry (`EvaluationRow`) carries `samples`/`real`/`synthetic`
+counts, `accuracy`/`auc`, and their change versus the `clean` row — the two
+written files (`clean_vs_transformed.csv`/`.md`) are the same rows, formatted.
+Passing a custom `transforms=` mapping (instead of the full `EVAL_GRID`) must
+still include a `"clean"` entry, since every delta is measured against it.
+`binary_auc` (rank-based ROC AUC, ties handled) is exported separately in case
+another script wants it standalone.

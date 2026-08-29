@@ -3,6 +3,7 @@ schema: label is a bare int64 (no ClassLabel names) and rows carry a heavy
 unused mask column."""
 
 import io
+import csv
 import shutil
 
 import numpy as np
@@ -20,7 +21,14 @@ from data_loader import (
     ImageDatasetLoader,
 )
 from data_loader.local_image_batch_loader import SIDDataset
-from pipeline import BranchViewDataset, create_dataloaders, two_views
+from pipeline import (
+    EVAL_GRID,
+    BranchViewDataset,
+    binary_auc,
+    create_dataloaders,
+    evaluate_model,
+    two_views,
+)
 
 
 def _png_bytes(seed):
@@ -174,3 +182,105 @@ def test_dataloader_factory_builds_fixed_binary_splits(sid_like_dir):
     assert patch.shape == (4, 3, 32, 32)
     assert set(label.tolist()) <= {0, 1}
     assert set(original_label.tolist()) <= {0, 1}
+
+
+def test_binary_auc_handles_order_and_ties():
+    labels = [0, 0, 1, 1]
+    assert binary_auc(labels, [0.1, 0.2, 0.8, 0.9]) == 1.0
+    assert binary_auc(labels, [0.9, 0.8, 0.2, 0.1]) == 0.0
+    assert binary_auc(labels, [0.5, 0.5, 0.5, 0.5]) == 0.5
+    with pytest.raises(ValueError, match="both binary classes"):
+        binary_auc([0, 0], [0.1, 0.2])
+
+
+def test_evaluator_runs_full_pipeline_and_writes_reports(sid_like_dir, tmp_path):
+    class FakeTwoBranchModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.seen = 0
+
+        def forward(self, dino, patch):
+            assert not torch.is_grad_enabled()
+            assert dino.shape[1:] == (3, 224, 224)
+            assert patch.shape[1:] == (3, 32, 32)
+            self.seen += len(dino)
+            signal = dino.mean(dim=(1, 2, 3)) + patch.mean(dim=(1, 2, 3)) / 255
+            return torch.sigmoid(signal)
+
+    loaders = create_dataloaders(
+        sid_like_dir,
+        batch_size=2,
+        num_workers=0,
+        seed=7,
+        test_fraction=0.5,
+    )
+    model = FakeTwoBranchModel()
+    model.train()
+    report = evaluate_model(model, loaders, output_dir=tmp_path / "evaluation")
+
+    assert model.training  # the evaluator restored the prior mode
+    assert len(report.rows) == len(EVAL_GRID) == 17
+    assert [row.transform for row in report.rows] == list(EVAL_GRID)
+    assert all(row.samples == len(loaders.test.dataset) for row in report.rows)
+    assert all(np.isfinite([row.accuracy, row.auc]).all() for row in report.rows)
+    assert model.seen == len(EVAL_GRID) * len(loaders.test.dataset)
+
+    with report.csv_path.open(newline="", encoding="utf-8") as handle:
+        csv_rows = list(csv.DictReader(handle))
+    assert [row["transform"] for row in csv_rows] == list(EVAL_GRID)
+    markdown = report.markdown_path.read_text(encoding="utf-8")
+    assert all(name in markdown for name in EVAL_GRID)
+
+
+def test_evaluator_accuracy_matches_class_counts_for_a_constant_model(
+    sid_like_dir, tmp_path
+):
+    """A model that always predicts one class must score exactly that class's
+    share of the test set — the most direct check that accuracy is computed
+    correctly, without needing to hand-derive numbers from the hashed split."""
+
+    class ConstantModel(torch.nn.Module):
+        def __init__(self, score):
+            super().__init__()
+            self.score = score
+
+        def forward(self, dino, patch):
+            return torch.full((len(dino),), self.score)
+
+    loaders = create_dataloaders(sid_like_dir, batch_size=4, test_fraction=0.5)
+    always_synthetic = evaluate_model(
+        ConstantModel(0.9), loaders, output_dir=tmp_path / "a"
+    ).rows[0]
+    always_real = evaluate_model(
+        ConstantModel(0.1), loaders, output_dir=tmp_path / "b"
+    ).rows[0]
+    assert always_synthetic.accuracy == always_synthetic.synthetic / always_synthetic.samples
+    assert always_real.accuracy == always_real.real / always_real.samples
+
+
+def test_evaluator_requires_a_clean_cell(sid_like_dir, tmp_path):
+    loaders = create_dataloaders(sid_like_dir, batch_size=4, test_fraction=0.5)
+    grid_without_clean = {k: v for k, v in EVAL_GRID.items() if k != "clean"}
+    with pytest.raises(ValueError, match="clean"):
+        evaluate_model(
+            torch.nn.Linear(1, 1),
+            loaders,
+            output_dir=tmp_path,
+            transforms=grid_without_clean,
+        )
+
+
+def test_evaluator_rejects_an_already_augmented_test_dataset(sid_like_dir, tmp_path):
+    from pipeline import RandomAugment
+
+    loaders = create_dataloaders(sid_like_dir, batch_size=4, test_fraction=0.5)
+    loaders.test.dataset.augmentation = RandomAugment(1.0, seed=0)
+    with pytest.raises(ValueError, match="frozen"):
+        evaluate_model(lambda d, p: torch.zeros(len(d)), loaders, output_dir=tmp_path)
+
+
+def test_evaluator_rejects_out_of_range_probabilities(sid_like_dir, tmp_path):
+    model = lambda dino, patch: torch.full((len(dino),), 1.5)  # not a probability
+    loaders = create_dataloaders(sid_like_dir, batch_size=4, test_fraction=0.5)
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        evaluate_model(model, loaders, output_dir=tmp_path)

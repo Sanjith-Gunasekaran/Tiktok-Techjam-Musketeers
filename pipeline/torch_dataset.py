@@ -32,6 +32,7 @@ class BranchViewDataset(Dataset[BranchSample]):
         source: ImageDatasetLoader,
         rows: HFDataset | None = None,
         augmentation: Callable[[Image.Image], Image.Image] | None = None,
+        partition: str | None = None,
     ) -> None:
         if source.transform is not None:
             raise ValueError("ImageDatasetLoader.transform must be None")
@@ -41,6 +42,7 @@ class BranchViewDataset(Dataset[BranchSample]):
         self.source = source
         self.rows = selected_rows
         self.augmentation = augmentation
+        self.partition = partition
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -154,9 +156,15 @@ def create_dataloaders(
         second_probability=second_augmentation_probability,
         seed=seed,
     )
-    train_dataset = BranchViewDataset(train_source, augmentation=augmentation)
-    validation_dataset = BranchViewDataset(validation_source, validation_rows)
-    test_dataset = BranchViewDataset(validation_source, test_rows)
+    train_dataset = BranchViewDataset(
+        train_source, augmentation=augmentation, partition="train"
+    )
+    validation_dataset = BranchViewDataset(
+        validation_source, validation_rows, partition="validation"
+    )
+    test_dataset = BranchViewDataset(
+        validation_source, test_rows, partition="test"
+    )
 
     loader_options = {
         "batch_size": batch_size,

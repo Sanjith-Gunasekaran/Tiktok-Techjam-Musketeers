@@ -108,8 +108,13 @@ def _realistic_chain(image: Image.Image) -> Image.Image:
     return jpeg(resize_cycle(center_crop(image, 0.8), 0.5), 50)
 
 
+def identity(image: Image.Image) -> Image.Image:
+    """Return an unchanged image for the clean evaluation cell."""
+    return image
+
+
 EVAL_GRID: dict[str, callable] = {
-    "clean": lambda image: image,
+    "clean": identity,
     "jpeg_q90": partial(jpeg, quality=90),
     "jpeg_q70": partial(jpeg, quality=70),
     "jpeg_q50": partial(jpeg, quality=50),

@@ -38,7 +38,7 @@ python -m pytest tests/
 ```
 
 Covers loading, label exclusion, augmentation, branch views, fixed splits,
-and the torch DataLoader factory.
+the DataLoader factory, and end-to-end transform-grid evaluation.
 
 ## Roadmap
 
@@ -48,7 +48,7 @@ and the torch DataLoader factory.
 - [x] Two-branch preprocessing (DINOv2 view + simplest-patch view)
 - [x] Internal test-set carve-out
 - [x] PyTorch Dataset wrapper + DataLoader factory
-- [ ] Evaluation harness (clean vs. transformed table)
+- [x] Evaluation harness (clean vs. transformed CSV/Markdown table)
 - [ ] DINOv2 head, SRM forensics branch, score fusion
 - [ ] Inference script (image dir → JSON of `image_path`, `pred`)
 
