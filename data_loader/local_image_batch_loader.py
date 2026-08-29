@@ -120,6 +120,9 @@ class SIDDataset(BatchLoader):
                         "width": width,
                         "height": height,
                         "label": int(values["label"]),
+                        # Team decision: tampered (class 2) counts as AI, so
+                        # every non-real class maps to the binary AI label 1.
+                        "binary_label": int(int(values["label"]) != 0),
                     }
 
         return [sample for sample in batch if sample is not None]
@@ -167,7 +170,7 @@ def main() -> None:
     for sample in batch:
         print(
             f"{sample['img_id']}: {sample['width']}x{sample['height']}, "
-            f"label={sample['label']}"
+            f"label={sample['label']}, binary_label={sample['binary_label']}"
         )
 
 

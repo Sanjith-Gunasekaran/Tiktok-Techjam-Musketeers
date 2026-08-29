@@ -24,6 +24,13 @@ from PIL import Image
 IMAGE_COLUMN_CANDIDATES = ("image", "img", "picture", "photo")
 LABEL_COLUMN_CANDIDATES = ("label", "labels", "class", "target")
 
+# Team decision: the model is binary (0 = real, 1 = AI) and tampered images
+# count as AI. SID-Set has three classes (0 = real, 1 = fully synthetic,
+# 2 = tampered), so classes 1 and 2 both map to the AI label. If the dataset's
+# class order ever looks different, check original_label_name in a preview
+# batch before training.
+SID_SET_BINARY_LABEL_MAP = {0: 0, 1: 1, 2: 1}
+
 
 class ImageDatasetLoader:
     """Present different image dataset sources through one batching API.
