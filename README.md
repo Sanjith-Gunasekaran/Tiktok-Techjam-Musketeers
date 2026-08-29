@@ -176,7 +176,6 @@ augmentation.
 
 - PyTorch `Dataset` wrapper producing the two-branch tensors, with a held-out
   test split carved out for the robustness table
-- Evaluation harness (clean vs. transformed metrics)
 - Balanced training-subset download script
 
 ## Robustness transformations
@@ -201,4 +200,38 @@ Create a labelled visual preview:
 ```bash
 python -m evaluation.preview_augmentations path/to/image.jpg \
   --output augmentation_preview.jpg
+```
+
+### Run the robustness evaluator
+
+The evaluator is model-independent. Supply a function that accepts a batch of
+PIL images and returns one AI-confidence score per image:
+
+```python
+from evaluation.reporting import save_report
+from evaluation.robustness import evaluate_robustness
+
+report = evaluate_robustness(
+    images,
+    labels,
+    predict_batch,
+    image_paths=image_paths,
+    batch_size=32,
+)
+
+saved_files = save_report(report, "evaluation_results")
+```
+
+The output folder contains:
+
+- `robustness_summary.csv` — clean and transformed ROC-AUC metrics table
+- `robustness_predictions.json` — scores for every image and condition
+- `error_analysis.json` — false-positive and false-negative examples
+- `robustness_report.json` — overall score, summary and error analysis
+
+The reported robust ROC-AUC is the mean ROC-AUC across all transformed
+conditions. The combined score is:
+
+```text
+0.5 × clean ROC-AUC + 0.5 × robust ROC-AUC
 ```
