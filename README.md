@@ -25,7 +25,7 @@ separately.
 | File | Purpose |
 | --- | --- |
 | `data_loader/__init__.py` | Makes `data_loader` importable as a package; exposes `ImageDatasetLoader` and `SID_SET_BINARY_LABEL_MAP`. |
-| `data_loader/image_dataset_loader.py` | **The main loader.** One API over local image folders, Hugging Face, and Kaggle. Downloads-and-caches or streams, auto-detects image/label columns, remaps labels via `label_map`, iterates whole epochs (`iter_batches`), and has a CLI for previewing batches. |
+| `data_loader/image_dataset_loader.py` | **The main loader.** One API over local downloads (Parquet shards or image folders), Hugging Face, and Kaggle. Auto-detects image/label columns, remaps labels via `label_map`, iterates whole epochs (`iter_batches`), and has a CLI for previewing batches. |
 | `data_loader/batch_loader.py` | Tiny abstract base class: the contract a batch loader follows (return a random batch, decode one image). |
 | `data_loader/local_image_batch_loader.py` | Preview/debug tool for a locally downloaded SID-Set copy. Reads random samples straight out of the Parquet shards. Good for spot-checking a download; too slow to feed training. |
 
@@ -35,16 +35,29 @@ separately.
 python -m pip install -r requirements.txt
 ```
 
-## Recommended workflow: local downloaded data
+## 1. Already downloaded the data? Point the loader at it
 
-Streaming straight from Hugging Face is handy for a quick look, but it
-shuffles poorly and re-downloads every epoch (see below). For real work,
-download once and load from disk.
+If you have a local SID-Set copy (Parquet shards, e.g. from `hf download`),
+just give the loader that folder — it finds the shards, matches them to the
+requested split, and reads from disk with fast, truly shuffled random access:
 
-### 1. Download
+```python
+from data_loader import ImageDatasetLoader, SID_SET_BINARY_LABEL_MAP
 
-The full SID-Set is ~116 GB, so start with the validation split or a filtered
-subset. Install the Hugging Face CLI, then from the repository root:
+loader = ImageDatasetLoader(
+    "data",                               # folder containing the shards
+    split="validation",
+    label_map=SID_SET_BINARY_LABEL_MAP,   # tampered counts as AI
+)
+
+batch = loader.get_batch(8, seed=42)
+```
+
+Asking for a split that is not in the folder raises an error listing the
+splits that are actually there.
+
+For reference, a local copy is created with the Hugging Face CLI (the full
+dataset is ~116 GB, so consider starting with the validation split):
 
 ```bash
 curl -LsSf https://hf.co/cli/install.sh | bash -s
@@ -53,58 +66,56 @@ hf download saberzl/SID_Set --type dataset \
   --local-dir data
 ```
 
-Drop the `--include` filter to fetch everything. Expected layout:
+## 2. No local copy? Let the program download it
 
-```text
-data/
-└── data/
-    ├── train-00000-of-00249.parquet   (if downloaded)
-    ├── ...
-    └── validation-00000-of-00034.parquet
-```
-
-### 2. Spot-check the download
-
-```bash
-cd data_loader
-python local_image_batch_loader.py --batch-size 8 --split validation --data-dir ../data/data
-```
-
-Prints each sampled image's ID, size, 3-class `label`, and the team-convention
-`binary_label` (0 = real, 1 = AI).
-
-### 3. Load in Python for real use
-
-Point the loader at the folder you downloaded into — it detects the Parquet
-shards, matches them to the requested split, and gives fast, truly shuffled
-random access from disk:
+Use the Hugging Face ID with `streaming=False`. The `datasets` library
+downloads the split into its own cache the first time this runs, and every
+later run reads from disk — same end result as option 1, no manual steps:
 
 ```python
-from data_loader import ImageDatasetLoader, SID_SET_BINARY_LABEL_MAP
-
 loader = ImageDatasetLoader(
-    "data",                               # the folder from step 1
+    "hf://saberzl/SID_Set",
     split="validation",
-    label_map=SID_SET_BINARY_LABEL_MAP,   # tampered counts as AI
+    streaming=False,                      # download once into the cache
+    label_map=SID_SET_BINARY_LABEL_MAP,
 )
-
-batch = loader.get_batch(8, seed=42)
-for sample in batch:
-    print(sample["label"], sample["original_label_name"], sample["image"].size)
 ```
 
-`label` is the binary label; `original_label` / `original_label_name` keep the
-3-class truth. **Check the printed names once**: if class 0 turns out not to
-be "real", fix `SID_SET_BINARY_LABEL_MAP` before training anything.
+## 3. Check the data once it's loaded
 
-No local download yet? Skip step 1 and use
-`ImageDatasetLoader("hf://saberzl/SID_Set", split="validation", streaming=False, ...)`
-instead — the `datasets` library then downloads into its own cache on first
-use and reads from disk afterwards.
+Every sample is a dict with the decoded image, the binary training label, and
+the original 3-class truth:
 
-## Streaming (quick exploration only)
+```python
+for sample in loader.get_batch(8, seed=42):
+    print(
+        sample["label"],                  # 0 = real, 1 = AI (what the model trains on)
+        sample["original_label_name"],    # "real" / "full_synthetic" / "tampered"
+        sample["image"].size,             # decoded RGB PIL image
+    )
+```
 
-The default for Hugging Face sources — nothing is downloaded up front:
+**Do this once before training:** confirm that class 0 prints as "real". If it
+ever does not, fix `SID_SET_BINARY_LABEL_MAP` first — a flipped mapping wastes
+a whole training run.
+
+Two more ways to eyeball the data:
+
+```bash
+# Random samples straight from downloaded Parquet shards (IDs, sizes, labels):
+python data_loader/local_image_batch_loader.py \
+  --batch-size 8 --split validation --data-dir data/data
+
+# Save a previewed batch as JPEGs to look at:
+python -m data_loader.image_dataset_loader hf://saberzl/SID_Set \
+  --split validation --batch-size 8 --seed 42 \
+  --label-map "0=0,1=1,2=1" --preview-dir batch_preview
+```
+
+## 4. Other ways to stream or extract data
+
+**Streaming (quick exploration only).** The default for Hugging Face sources —
+nothing is downloaded up front:
 
 ```python
 loader = ImageDatasetLoader(
@@ -115,16 +126,14 @@ loader = ImageDatasetLoader(
 batch = loader.get_batch(8, seed=0)
 ```
 
-**Caveat:** streamed data is shuffled through a small buffer (100 images by
-default), which over a 300K-image stream is close to no shuffling at all.
-Fine for previews; not good enough for training. `shuffle_buffer_size=` mixes
-somewhat better at the cost of a slower start, but a local download is the
-real fix.
+Caveat: streamed data is shuffled through a small buffer (100 images by
+default), which over a 300K-image stream is close to no shuffling at all —
+fine for previews, not good enough for training. `shuffle_buffer_size=` mixes
+somewhat better at the cost of a slower start; a local download (option 1 or
+2) is the real fix.
 
-## Other sources
-
-Kaggle — prefix the handle with `kaggle://` (a bare `owner/name` is treated as
-a Hugging Face ID). String class names work in `label_map` for folder-style
+**Kaggle.** Prefix the handle with `kaggle://` (a bare `owner/name` is treated
+as a Hugging Face ID). String class names work in `label_map` for folder-style
 datasets:
 
 ```python
@@ -135,15 +144,14 @@ loader = ImageDatasetLoader(
 )
 ```
 
-Local image folders — standard ImageFolder layout (`split/class_name/img.jpg`);
-folder names become labels. (A local folder of Parquet shards is detected
-automatically, as in the recommended workflow above.)
+**Local image folders.** Standard ImageFolder layout
+(`split/class_name/img.jpg`); folder names become labels:
 
 ```python
 loader = ImageDatasetLoader("my_dataset", split="train")
 ```
 
-Unusual column names — pass them explicitly:
+**Unusual column names.** Pass them explicitly:
 
 ```python
 loader = ImageDatasetLoader("owner/dataset", image_column="photo", label_column="is_generated")
@@ -151,19 +159,6 @@ loader = ImageDatasetLoader("owner/dataset", image_column="photo", label_column=
 
 An unknown label always raises an error instead of silently training on the
 wrong target.
-
-## Command line
-
-The main loader doubles as a CLI. Preview 8 mapped samples and save them as
-JPEGs for eyeballing:
-
-```bash
-python -m data_loader.image_dataset_loader hf://saberzl/SID_Set \
-  --split validation --batch-size 8 --seed 42 \
-  --label-map "0=0,1=1,2=1" --preview-dir batch_preview
-```
-
-Add `--download` to use the cached (non-streaming) mode.
 
 ## Training loops
 
