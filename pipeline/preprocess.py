@@ -3,15 +3,22 @@
 Our detector has two branches with opposite needs, so one image becomes two
 tensors:
 
-* ``dino_view`` -- semantic branch. Resized to 224x224 and ImageNet-normalized,
-  because that is the input language the pretrained DINOv2 backbone expects.
-* ``srm_view``  -- forensics branch. The "simplest" patch of the image (least
-  texture, after the ESSP paper), as RAW untouched pixels: no resize of the
-  patch, no normalization, because interpolation and rescaling smear the
-  faint noise fingerprint this branch detects.
+* ``dino_view`` -- semantic branch. Aspect-preserving resize (shortest edge
+  to 256) then center crop to 224x224, ImageNet-normalized: the exact
+  geometry DINOv2's official processor uses. No stretching -- stretching
+  distorts shapes and can leak class information when one class has more
+  square images than the other.
+* ``simplest_patch`` -- forensics branch. Following the official SSP
+  pipeline, the whole image is first standardized to 256x256 so EVERY image
+  offers the same 64 candidate tiles; then the lowest-texture 32x32 tile is
+  returned as raw pixels. Standardizing first matters: at native resolution
+  a 4K photo would offer thousands of candidates and therefore find
+  systematically smoother minima than a small image -- the model could read
+  image resolution instead of forensic evidence.
 
-Call these AFTER any augmentation, so both branches see the same degraded
-image. PIL image in, torch tensor out.
+Note the patch is NOT yet SRM-filtered; the model applies SRM filters as its
+first (frozen) layer. Call these AFTER any augmentation, so both branches
+see the same degraded image. PIL image in, torch tensor out.
 """
 
 from __future__ import annotations
@@ -24,45 +31,44 @@ from PIL import Image
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
-DINO_SIZE = 224     # DINOv2's standard input side length
-PATCH_SIZE = 32     # simplest-patch side length (ESSP's ablation optimum)
+DINO_RESIZE = 256    # shortest edge before the crop (official processor config)
+DINO_CROP = 224      # DINOv2's input side length
+STANDARD_SIZE = 256  # SSP: fixed candidate population of (256/32)^2 = 64 tiles
+PATCH_SIZE = 32      # simplest-patch side length (SSP's choice)
 
 
-def dino_view(image: Image.Image, size: int = DINO_SIZE) -> torch.Tensor:
-    """Semantic-branch view: float32 tensor of shape (3, size, size),
-    zero-centered the way DINOv2's pretraining expects."""
-    resized = image.convert("RGB").resize((size, size), Image.BICUBIC)
-    array = np.asarray(resized, dtype=np.float32) / 255.0
+def dino_view(image: Image.Image) -> torch.Tensor:
+    """Semantic-branch view: float32 tensor (3, 224, 224), zero-centered the
+    way DINOv2's pretraining expects, geometry per the official processor."""
+    image = image.convert("RGB")
+    width, height = image.size
+    scale = DINO_RESIZE / min(width, height)
+    image = image.resize((round(width * scale), round(height * scale)), Image.BICUBIC)
+    width, height = image.size
+    left, top = (width - DINO_CROP) // 2, (height - DINO_CROP) // 2
+    image = image.crop((left, top, left + DINO_CROP, top + DINO_CROP))
+    array = np.asarray(image, dtype=np.float32) / 255.0
     array = (array - IMAGENET_MEAN) / IMAGENET_STD
     # Height x Width x Channels -> Channels x Height x Width (torch's layout).
     return torch.from_numpy(array.transpose(2, 0, 1).copy())
 
 
-def srm_view(image: Image.Image, patch_size: int = PATCH_SIZE) -> torch.Tensor:
-    """Forensics-branch view: the lowest-texture patch as a float32 tensor of
-    shape (3, patch_size, patch_size), raw pixel values 0-255.
+def simplest_patch(image: Image.Image) -> torch.Tensor:
+    """Forensics-branch view: the lowest-texture tile as a float32 tensor
+    (3, 32, 32), raw pixel values 0-255.
 
-    Why the *simplest* patch: generators concentrate effort on rich textures;
+    Why the *simplest* tile: generators concentrate effort on rich textures;
     flat regions keep the clearest gap between real camera noise and
-    generated smoothness. Left unnormalized on purpose -- the SRM filters in
-    the model operate on raw pixel values.
+    generated smoothness. Left unnormalized on purpose -- SRM filters in the
+    model operate on raw pixel values.
     """
-    image = image.convert("RGB")
-    width, height = image.size
-    # Tiny images only: upscale just enough to fit one patch.
-    if width < patch_size or height < patch_size:
-        image = image.resize(
-            (max(width, patch_size), max(height, patch_size)), Image.BILINEAR
-        )
+    # Standardize so every image offers the same 8x8 grid of candidates.
+    image = image.convert("RGB").resize((STANDARD_SIZE, STANDARD_SIZE), Image.BICUBIC)
     array = np.asarray(image, dtype=np.float32)
+    grid = STANDARD_SIZE // PATCH_SIZE
+    tiles = array.reshape(grid, PATCH_SIZE, grid, PATCH_SIZE, 3).transpose(0, 2, 1, 3, 4)
 
-    # Cut the image into a grid of non-overlapping patch_size x patch_size
-    # tiles (dropping any leftover right/bottom edge).
-    rows, cols = array.shape[0] // patch_size, array.shape[1] // patch_size
-    array = array[: rows * patch_size, : cols * patch_size]
-    tiles = array.reshape(rows, patch_size, cols, patch_size, 3).transpose(0, 2, 1, 3, 4)
-
-    # ESSP's texture-diversity score: sum of absolute differences between
+    # SSP's texture-diversity score: sum of absolute differences between
     # neighboring pixels in four directions. Lowest score = simplest tile.
     horiz = np.abs(tiles[:, :, :, :-1] - tiles[:, :, :, 1:]).sum(axis=(2, 3, 4))
     vert = np.abs(tiles[:, :, :-1, :] - tiles[:, :, 1:, :]).sum(axis=(2, 3, 4))
@@ -76,4 +82,4 @@ def srm_view(image: Image.Image, patch_size: int = PATCH_SIZE) -> torch.Tensor:
 
 def two_views(image: Image.Image) -> tuple[torch.Tensor, torch.Tensor]:
     """Convenience: both branch views of the same (already augmented) image."""
-    return dino_view(image), srm_view(image)
+    return dino_view(image), simplest_patch(image)

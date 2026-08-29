@@ -17,6 +17,7 @@ never drift apart. PIL images in, PIL images out; only PIL and numpy needed.
 from __future__ import annotations
 
 import random
+import zlib
 from functools import partial
 from io import BytesIO
 
@@ -88,13 +89,23 @@ def center_crop(image: Image.Image, fraction: float) -> Image.Image:
 
 # ---------------------------------------------------------------------------
 # Evaluation mode: the brief's exact parameter grid, fixed and reproducible.
-# The noise entries use a fixed seed so every evaluation run sees identical
-# noise. Color jitter is made deterministic as one "all down 20%" and one
-# "all up 20%" variant.
+# Color jitter is made deterministic as one "all down 20%" and one "all up
+# 20%" variant. A compound entry mimics a realistic re-upload (crop +
+# thumbnail + JPEG stacked), since real posts rarely suffer one degradation
+# alone.
 # ---------------------------------------------------------------------------
 
-def _seeded_noise(image: Image.Image, sigma: float) -> Image.Image:
-    return gaussian_noise(image, sigma, rng=np.random.default_rng(0))
+def _content_seeded_noise(image: Image.Image, sigma: float) -> Image.Image:
+    """Deterministic noise whose seed comes from the image's own pixels:
+    runs are repeatable, but no two images share a noise pattern (a shared
+    pattern would be a giveaway to a noise-forensics branch)."""
+    seed = zlib.crc32(image.tobytes()[:4096])
+    return gaussian_noise(image, sigma, rng=np.random.default_rng(seed))
+
+
+def _realistic_chain(image: Image.Image) -> Image.Image:
+    """Crop, thumbnail, and JPEG together, like a typical repost pipeline."""
+    return jpeg(resize_cycle(center_crop(image, 0.8), 0.5), 50)
 
 
 EVAL_GRID: dict[str, callable] = {
@@ -108,12 +119,13 @@ EVAL_GRID: dict[str, callable] = {
     "blur_s20": partial(blur, sigma=2.0),
     "resize_050": partial(resize_cycle, scale=0.50),
     "resize_025": partial(resize_cycle, scale=0.25),
-    "noise_s002": partial(_seeded_noise, sigma=0.02),
-    "noise_s005": partial(_seeded_noise, sigma=0.05),
-    "noise_s010": partial(_seeded_noise, sigma=0.10),
+    "noise_s002": partial(_content_seeded_noise, sigma=0.02),
+    "noise_s005": partial(_content_seeded_noise, sigma=0.05),
+    "noise_s010": partial(_content_seeded_noise, sigma=0.10),
     "jitter_down": partial(color_jitter, brightness=0.8, contrast=0.8, saturation=0.8),
     "jitter_up": partial(color_jitter, brightness=1.2, contrast=1.2, saturation=1.2),
     "crop_80": partial(center_crop, fraction=0.8),
+    "chain_crop_resize_jpeg": _realistic_chain,
 }
 
 
@@ -126,26 +138,48 @@ class RandomAugment:
 
     With probability ``probability`` one of the six transforms is applied at
     a random strength inside the brief's ranges; otherwise the image passes
-    through untouched, so the model keeps seeing clean images too.
+    through untouched, so the model keeps seeing clean images too. Because
+    real uploads often stack degradations (crop + resize + JPEG), a second,
+    different transform is chained on top with ``second_probability``.
 
-    Reproducible when given a ``seed``. When using DataLoader workers, give
-    each worker its own instance (or its own seed) so they don't all produce
-    the same "random" choices.
+    Reproducible when given a ``seed``. IMPORTANT with DataLoader workers:
+    forked workers start with identical copies of this object's random
+    state and would emit duplicate augmentation streams -- call ``reseed``
+    from a ``worker_init_fn`` (e.g. ``reseed(base_seed + worker_id)``).
     """
 
     _CHOICES = ("jpeg", "blur", "resize", "noise", "jitter", "crop")
 
-    def __init__(self, probability: float = 0.5, seed: int | None = None):
+    def __init__(
+        self,
+        probability: float = 0.5,
+        seed: int | None = None,
+        second_probability: float = 0.3,
+    ):
         if not 0.0 <= probability <= 1.0:
             raise ValueError("probability must be between 0 and 1")
+        if not 0.0 <= second_probability <= 1.0:
+            raise ValueError("second_probability must be between 0 and 1")
         self.probability = probability
+        self.second_probability = second_probability
+        self.reseed(seed)
+
+    def reseed(self, seed: int | None) -> None:
+        """Give this instance a fresh random state (see class docstring)."""
         self._rng = random.Random(seed)
         self._np_rng = np.random.default_rng(seed)
 
     def __call__(self, image: Image.Image) -> Image.Image:
         if self._rng.random() >= self.probability:
             return image
-        choice = self._rng.choice(self._CHOICES)
+        first = self._rng.choice(self._CHOICES)
+        image = self._apply(first, image)
+        if self._rng.random() < self.second_probability:
+            second = self._rng.choice([c for c in self._CHOICES if c != first])
+            image = self._apply(second, image)
+        return image
+
+    def _apply(self, choice: str, image: Image.Image) -> Image.Image:
         if choice == "jpeg":
             return jpeg(image, quality=self._rng.randint(30, 90))
         if choice == "blur":

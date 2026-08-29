@@ -1,15 +1,16 @@
 """Feature pipeline: everything between raw images and model-ready inputs."""
 
 from .augmentations import EVAL_GRID, RandomAugment
-from .preprocess import dino_view, srm_view, two_views
-from .splits import is_internal_test, split_dataset
+from .preprocess import dino_view, simplest_patch, two_views
+from .splits import family_id, is_internal_test, split_dataset
 
 __all__ = [
     "EVAL_GRID",
     "RandomAugment",
     "dino_view",
-    "srm_view",
+    "simplest_patch",
     "two_views",
+    "family_id",
     "is_internal_test",
     "split_dataset",
 ]

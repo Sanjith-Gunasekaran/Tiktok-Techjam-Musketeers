@@ -27,6 +27,11 @@ Other loader notes:
   `img_id` text reveals the label — metadata must never be fed to a model.
 - **Pin the dataset version** with `revision="<commit hash>"` for
   reproducible runs against Hugging Face sources.
+- **Always pass `label_map`** for training. Without it SID's 3-class labels
+  pass through unchanged and label `2` would reach a binary trainer; the
+  loader warns once if that happens.
+- Streaming is for exploration only (weak shuffle buffer). Training will go
+  through the upcoming torch Dataset wrapper, not `iter_batches`.
 - Local shard folders are sanity-checked: duplicate shard filenames raise an
   error; fewer shards than the filenames promise triggers a warning.
 

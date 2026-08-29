@@ -83,6 +83,7 @@ class ImageDatasetLoader:
         # img_id text reveals the label -- metadata must never reach a model.
         self.metadata_columns = tuple(metadata_columns)
         self.revision = revision
+        self._warned_unmapped = False
         self.cache_dir = Path(cache_dir) if cache_dir is not None else None
         self.shuffle_buffer_size = shuffle_buffer_size
         self.convert_mode = convert_mode
@@ -326,7 +327,21 @@ class ImageDatasetLoader:
 
     def _map_label(self, original_label: Any, label_name: str | None) -> Any:
         """Map a source label to the task label while retaining its raw value."""
-        if original_label is None or self.label_map is None:
+        if original_label is None:
+            return original_label
+        if self.label_map is None:
+            # Our task is binary; a raw 3-class label reaching a trainer would
+            # either crash the loss or train on an invalid target. Warn once.
+            if original_label not in (0, 1) and not self._warned_unmapped:
+                import warnings
+
+                self._warned_unmapped = True
+                warnings.warn(
+                    f"Label {original_label!r} is not 0/1 and no label_map was "
+                    "given. Pass label_map=SID_SET_BINARY_LABEL_MAP for binary "
+                    "training.",
+                    stacklevel=3,
+                )
             return original_label
         if callable(self.label_map):
             return self.label_map(original_label)

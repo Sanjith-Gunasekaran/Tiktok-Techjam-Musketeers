@@ -100,3 +100,19 @@ def test_partial_download_warns(sid_like_dir):
 def test_missing_split_names_available_ones(sid_like_dir):
     with pytest.raises(FileNotFoundError, match="validation"):
         ImageDatasetLoader(sid_like_dir, split="test")
+
+
+def test_forgotten_label_map_warns_once(sid_like_dir):
+    """Without a label_map, SID label 2 would reach a binary trainer."""
+    loader = ImageDatasetLoader(sid_like_dir, split="validation")
+    with pytest.warns(UserWarning, match="label_map"):
+        loader.get_batch(12, seed=0)
+
+
+def test_mapped_labels_are_binary_and_silent(sid_like_dir):
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any label warning becomes a failure
+        batch = _loader(sid_like_dir).get_batch(12, seed=0)
+    assert {sample["label"] for sample in batch} <= {0, 1}

@@ -12,9 +12,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 @pytest.fixture
 def textured_image() -> Image.Image:
-    """A deterministic 128x128 noisy image with one flat 32px tile at
-    (row 2, col 1) — the known 'simplest patch'."""
+    """A deterministic 256x256 noisy image with one flat 32px tile at
+    (row 2, col 1) — the known 'simplest patch'. Already at the pipeline's
+    standard size so patch selection involves no resampling."""
     rng = np.random.default_rng(0)
-    array = rng.integers(0, 256, (128, 128, 3)).astype(np.uint8)
+    array = rng.integers(0, 256, (256, 256, 3)).astype(np.uint8)
     array[64:96, 32:64] = 128
     return Image.fromarray(array)
