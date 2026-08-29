@@ -80,6 +80,8 @@ class ImageDatasetLoader:
         self.dataset = self._open_dataset(
             source_kind, source_value, token=token
         )
+        # Work out the column names once up front (see _detect_columns).
+        self._columns = self._detect_columns()
         self.image_column = image_column or self._find_column(
             IMAGE_COLUMN_CANDIDATES, required=True
         )
@@ -182,6 +184,7 @@ class ImageDatasetLoader:
     def _open_dataset(
         self, source_kind: str, source_value: str, *, token: str | bool | None
     ) -> Dataset | IterableDataset:
+        """Open the data from the right place: Hugging Face, Kaggle, or a local folder."""
         common_kwargs: dict[str, Any] = {
             "split": self.split,
             "streaming": self.streaming,
@@ -217,6 +220,7 @@ class ImageDatasetLoader:
         )
 
     def _normalise_sample(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        """Turn one raw dataset row into a clean {image, label, metadata} sample."""
         image = self._decode_image(row[self.image_column])
         if self.convert_mode is not None:
             image = image.convert(self.convert_mode)
@@ -266,7 +270,11 @@ class ImageDatasetLoader:
     def _get_label_names(self) -> tuple[str, ...] | None:
         if self.label_column is None:
             return None
-        feature = self.dataset.features.get(self.label_column)
+        # Streamed datasets may not publish their schema; then no names exist.
+        features = getattr(self.dataset, "features", None)
+        if features is None:
+            return None
+        feature = features.get(self.label_column)
         names = getattr(feature, "names", None)
         return tuple(names) if names is not None else None
 
@@ -278,6 +286,8 @@ class ImageDatasetLoader:
         return None
 
     def _decode_image(self, value: Any) -> Image.Image:
+        """Datasets store images in different forms (already-decoded image, raw
+        bytes, or a file path); load whichever form this row uses."""
         if isinstance(value, Image.Image):
             return value
         if isinstance(value, (bytes, bytearray, memoryview)):
@@ -296,10 +306,23 @@ class ImageDatasetLoader:
             f"{type(value).__name__}"
         )
 
+    def _detect_columns(self) -> list[str]:
+        """Return the dataset's column names.
+
+        Streamed datasets sometimes do not know their columns until the first
+        sample arrives, so peek at one sample in that case.  ``iter`` opens a
+        fresh pass over the stream, so the peek does not skip any data later.
+        """
+        columns = self.dataset.column_names
+        if columns is None:
+            columns = list(next(iter(self.dataset)).keys())
+        return list(columns)
+
     def _find_column(
         self, candidates: tuple[str, ...], *, required: bool
     ) -> str | None:
-        columns = set(self.dataset.column_names)
+        # Guess which column holds the image (or label) from common names.
+        columns = set(self._columns)
         for candidate in candidates:
             if candidate in columns:
                 return candidate
@@ -311,10 +334,10 @@ class ImageDatasetLoader:
         return None
 
     def _validate_column(self, column: str) -> None:
-        if column not in self.dataset.column_names:
+        if column not in self._columns:
             raise ValueError(
                 f"Column {column!r} does not exist. Available columns: "
-                f"{', '.join(self.dataset.column_names)}"
+                f"{', '.join(self._columns)}"
             )
 
     @staticmethod
@@ -326,6 +349,8 @@ class ImageDatasetLoader:
 
     @staticmethod
     def _parse_source(source: str | Path) -> tuple[str, str]:
+        """Decide whether ``source`` is a local folder, a Kaggle handle, or a
+        Hugging Face ID/URL."""
         value = str(source)
         local_path = Path(value).expanduser()
         if local_path.exists():

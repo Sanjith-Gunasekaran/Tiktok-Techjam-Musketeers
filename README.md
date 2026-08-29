@@ -1,9 +1,23 @@
-# SID-Set Local Batch Loader
+# Data Loaders
 
-This project loads random image batches from a local copy of the
-[SID-Set dataset](https://huggingface.co/datasets/saberzl/SID_Set). Each sample
-contains a decoded PIL image together with its image ID, width, height, and
-classification label.
+This package is the data-loading layer for our AI-generated-image detector.
+It fetches images from local folders, Hugging Face, or Kaggle (for example the
+[SID-Set dataset](https://huggingface.co/datasets/saberzl/SID_Set)) and hands
+them out in batches, each sample holding a decoded PIL image plus its label
+and metadata — ready for the model code to consume.
+
+## What each file does
+
+| File | Purpose |
+| --- | --- |
+| `data_loader/__init__.py` | Makes `data_loader` importable as a package and exposes `ImageDatasetLoader`. Uses a lazy import so running the files as scripts stays safe. |
+| `data_loader/image_dataset_loader.py` | **The main loader.** One API over three sources (local image folders, Hugging Face IDs/URLs, `kaggle://` handles). Streams big datasets by default, auto-detects image/label columns, can remap labels for binary real-vs-AI training (`label_map`), iterates whole epochs (`iter_batches`), and has a CLI for previewing batches. |
+| `data_loader/batch_loader.py` | Tiny abstract base class: the contract a batch loader must follow (return a random batch, decode one image). |
+| `data_loader/local_image_batch_loader.py` | Preview/debug utility for a locally downloaded SID-Set copy. Reads random samples straight out of the Parquet shards without loading everything. Handy for spot-checking the download; too slow to feed training. |
+
+Still to build on top of this layer: the augmentation module (JPEG/blur/resize/
+noise/color-jitter/crop), a PyTorch `Dataset` wrapper that outputs the
+two-branch tensors, and the evaluation harness.
 
 ## Install the Python dependencies
 
