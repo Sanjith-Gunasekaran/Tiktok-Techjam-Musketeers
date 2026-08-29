@@ -17,7 +17,18 @@ from data_loader import SID_SET_BINARY_LABEL_MAP   # {0: 0, 1: 1, 2: 1}
 
 Every sample also keeps the original 3-class label (`original_label`,
 `original_label_name`), so error analysis can still report tampered images
-separately.
+separately. SID-Set stores its label as a bare integer with no names, so pass
+`label_names=SID_SET_LABEL_NAMES` to get readable names back.
+
+Other loader notes:
+
+- **Metadata is opt-in** (`metadata_columns=(...)`, default: keep nothing).
+  SID-Set's unused columns include a full-size mask image per row, and
+  `img_id` text reveals the label — metadata must never be fed to a model.
+- **Pin the dataset version** with `revision="<commit hash>"` for
+  reproducible runs against Hugging Face sources.
+- Local shard folders are sanity-checked: duplicate shard filenames raise an
+  error; fewer shards than the filenames promise triggers a warning.
 
 ## What each file does
 

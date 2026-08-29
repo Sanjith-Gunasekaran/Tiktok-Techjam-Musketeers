@@ -3,9 +3,13 @@
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .image_dataset_loader import SID_SET_BINARY_LABEL_MAP, ImageDatasetLoader
+    from .image_dataset_loader import (
+        SID_SET_BINARY_LABEL_MAP,
+        SID_SET_LABEL_NAMES,
+        ImageDatasetLoader,
+    )
 
-__all__ = ["ImageDatasetLoader", "SID_SET_BINARY_LABEL_MAP"]
+__all__ = ["ImageDatasetLoader", "SID_SET_BINARY_LABEL_MAP", "SID_SET_LABEL_NAMES"]
 
 
 def __getattr__(name: str) -> Any:

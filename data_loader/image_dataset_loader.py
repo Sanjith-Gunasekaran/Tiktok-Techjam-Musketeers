@@ -31,6 +31,11 @@ LABEL_COLUMN_CANDIDATES = ("label", "labels", "class", "target")
 # batch before training.
 SID_SET_BINARY_LABEL_MAP = {0: 0, 1: 1, 2: 1}
 
+# SID-Set stores label as a bare integer with no names attached (checked
+# against the dataset's config.json), so readable names must be supplied by
+# the caller via label_names=. These are SID-Set's classes in order.
+SID_SET_LABEL_NAMES = ("real", "full_synthetic", "tampered")
+
 
 class ImageDatasetLoader:
     """Present different image dataset sources through one batching API.
@@ -56,6 +61,9 @@ class ImageDatasetLoader:
         config: str | None = None,
         image_column: str | None = None,
         label_column: str | None = None,
+        label_names: tuple[str, ...] | None = None,
+        metadata_columns: tuple[str, ...] = (),
+        revision: str | None = None,
         streaming: bool | None = None,
         cache_dir: str | Path | None = None,
         token: str | bool | None = None,
@@ -70,6 +78,11 @@ class ImageDatasetLoader:
         self.source = source
         self.split = split
         self.config = config
+        # Extra columns to carry along per sample. Opt-in on purpose: SID-Set's
+        # unused columns include a full-size mask image per row (heavy), and
+        # img_id text reveals the label -- metadata must never reach a model.
+        self.metadata_columns = tuple(metadata_columns)
+        self.revision = revision
         self.cache_dir = Path(cache_dir) if cache_dir is not None else None
         self.shuffle_buffer_size = shuffle_buffer_size
         self.convert_mode = convert_mode
@@ -101,7 +114,11 @@ class ImageDatasetLoader:
         elif self.label_map is not None:
             raise ValueError("label_map requires a label column")
 
-        self.label_names = self._get_label_names()
+        # Prefer names published by the dataset itself; otherwise use the
+        # caller-supplied ones (e.g. SID_SET_LABEL_NAMES).
+        self.label_names = self._get_label_names() or (
+            tuple(label_names) if label_names else None
+        )
 
     def get_batch(
         self, batch_size: int, *, seed: int | None = None
@@ -202,6 +219,8 @@ class ImageDatasetLoader:
         if source_kind == "huggingface":
             if token is not None:
                 common_kwargs["token"] = token
+            if self.revision is not None:
+                common_kwargs["revision"] = self.revision
             return load_dataset(source_value, self.config, **common_kwargs)
 
         if source_kind == "kaggle":
@@ -227,6 +246,7 @@ class ImageDatasetLoader:
         # like `validation-00000-of-00034.parquet` are matched to the split.
         shards = sorted(self.local_root.rglob(f"{self.split}-*.parquet"))
         if shards:
+            self._check_shards(shards)
             return load_dataset(
                 "parquet",
                 data_files={self.split: [str(shard) for shard in shards]},
@@ -247,6 +267,40 @@ class ImageDatasetLoader:
             "imagefolder", data_dir=str(self.local_root), **common_kwargs
         )
 
+    @staticmethod
+    def _check_shards(shards: list[Path]) -> None:
+        """Catch two silent download problems: the same shard file found
+        twice under the folder, and fewer shards than the filenames promise
+        (names look like ``validation-00007-of-00034.parquet``)."""
+        names = [shard.name for shard in shards]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(
+                f"Duplicate shard filenames under the data folder: {duplicates}. "
+                "Point the loader at a narrower folder."
+            )
+        totals = {
+            int(name.rsplit("-of-", 1)[1].split(".")[0])
+            for name in names
+            if "-of-" in name
+        }
+        if len(totals) > 1:
+            raise ValueError(
+                f"Shards from different dataset versions are mixed together "
+                f"(conflicting shard totals {sorted(totals)})."
+            )
+        if totals:
+            expected = totals.pop()
+            if len(names) != expected:
+                import warnings
+
+                warnings.warn(
+                    f"Found {len(names)} shard(s) but filenames indicate "
+                    f"{expected}; the download may be partial. Fine if "
+                    "intentional (e.g. a quick subset).",
+                    stacklevel=3,
+                )
+
     def _normalise_sample(self, row: Mapping[str, Any]) -> dict[str, Any]:
         """Turn one raw dataset row into a clean {image, label, metadata} sample."""
         image = self._decode_image(row[self.image_column])
@@ -257,11 +311,7 @@ class ImageDatasetLoader:
         image = image.copy()
         output_image = self.transform(image) if self.transform else image
 
-        metadata = {
-            key: value
-            for key, value in row.items()
-            if key not in {self.image_column, self.label_column}
-        }
+        metadata = {key: row[key] for key in self.metadata_columns if key in row}
         original_label = (
             row.get(self.label_column) if self.label_column is not None else None
         )

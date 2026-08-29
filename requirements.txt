@@ -1,6 +1,7 @@
-datasets
-kagglehub
-numpy
-Pillow
-pyarrow
-torch
+datasets>=3.0
+kagglehub>=0.3
+numpy>=1.26
+Pillow>=10.0
+pyarrow>=15.0
+pytest>=8.0
+torch>=2.2

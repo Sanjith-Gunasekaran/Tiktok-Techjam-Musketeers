@@ -31,10 +31,21 @@ after ESSP) — trained with the challenge's transformations as augmentation.
 python -m pip install -r requirements.txt
 ```
 
+## Tests
+
+```bash
+python -m pytest tests/
+```
+
+Covers augmentations, both preprocessing views, the split carve-out, and the
+loader against SID-Set's real schema (bare int64 labels, mask column,
+duplicate/partial shard downloads).
+
 ## Roadmap
 
 - [x] Dataset loader (local Parquet / HF / Kaggle) with team label convention
 - [x] Augmentation module (brief's six transforms; train + eval modes)
+- [x] Committed pytest suite (`tests/`)
 - [ ] Two-branch preprocessing (DINOv2 view + simplest-patch view)
 - [ ] Internal test-set carve-out
 - [ ] PyTorch Dataset wrapper + DataLoader factory
