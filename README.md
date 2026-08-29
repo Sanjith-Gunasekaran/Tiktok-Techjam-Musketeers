@@ -75,17 +75,16 @@ Prints each sampled image's ID, size, 3-class `label`, and the team-convention
 
 ### 3. Load in Python for real use
 
-Open the dataset with `streaming=False`: the `datasets` library downloads it
-into its cache on first use, and every later run gets fast, truly shuffled
-random access from disk.
+Point the loader at the folder you downloaded into — it detects the Parquet
+shards, matches them to the requested split, and gives fast, truly shuffled
+random access from disk:
 
 ```python
 from data_loader import ImageDatasetLoader, SID_SET_BINARY_LABEL_MAP
 
 loader = ImageDatasetLoader(
-    "hf://saberzl/SID_Set",
+    "data",                               # the folder from step 1
     split="validation",
-    streaming=False,                      # download once, reuse from cache
     label_map=SID_SET_BINARY_LABEL_MAP,   # tampered counts as AI
 )
 
@@ -98,10 +97,10 @@ for sample in batch:
 3-class truth. **Check the printed names once**: if class 0 turns out not to
 be "real", fix `SID_SET_BINARY_LABEL_MAP` before training anything.
 
-Note: the Parquet shards fetched with `hf download` are read only by the
-spot-check tool for now; model code should load through `ImageDatasetLoader`
-as above. A script that pulls a smaller balanced training subset is the next
-planned addition.
+No local download yet? Skip step 1 and use
+`ImageDatasetLoader("hf://saberzl/SID_Set", split="validation", streaming=False, ...)`
+instead — the `datasets` library then downloads into its own cache on first
+use and reads from disk afterwards.
 
 ## Streaming (quick exploration only)
 
@@ -137,7 +136,8 @@ loader = ImageDatasetLoader(
 ```
 
 Local image folders — standard ImageFolder layout (`split/class_name/img.jpg`);
-folder names become labels:
+folder names become labels. (A local folder of Parquet shards is detected
+automatically, as in the recommended workflow above.)
 
 ```python
 loader = ImageDatasetLoader("my_dataset", split="train")

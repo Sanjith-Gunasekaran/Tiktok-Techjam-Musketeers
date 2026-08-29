@@ -222,6 +222,27 @@ class ImageDatasetLoader:
         else:
             self.local_root = Path(source_value).expanduser().resolve()
 
+        # A local folder can hold either Parquet shards (e.g. an `hf download`
+        # of SID-Set) or plain image files in class subfolders. Shards named
+        # like `validation-00000-of-00034.parquet` are matched to the split.
+        shards = sorted(self.local_root.rglob(f"{self.split}-*.parquet"))
+        if shards:
+            return load_dataset(
+                "parquet",
+                data_files={self.split: [str(shard) for shard in shards]},
+                **common_kwargs,
+            )
+        other_shards = sorted(self.local_root.rglob("*.parquet"))
+        if other_shards:
+            # Parquet data exists but not for this split; name the splits that
+            # are actually present instead of failing confusingly later.
+            available = sorted(
+                {shard.name.split("-")[0] for shard in other_shards}
+            )
+            raise FileNotFoundError(
+                f"No Parquet shards for split {self.split!r} under "
+                f"{self.local_root}. Splits found: {', '.join(available)}"
+            )
         return load_dataset(
             "imagefolder", data_dir=str(self.local_root), **common_kwargs
         )
