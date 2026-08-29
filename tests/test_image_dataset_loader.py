@@ -14,6 +14,7 @@ from datasets import Dataset, Features, Value
 from datasets import Image as HFImage
 
 from data_loader import SID_SET_BINARY_LABEL_MAP, SID_SET_LABEL_NAMES, ImageDatasetLoader
+from data_loader.local_image_batch_loader import SIDDataset
 
 
 def _png_bytes(seed):
@@ -68,9 +69,12 @@ def _loader(sid_like_dir, **kwargs):
 
 
 def test_int64_labels_map_and_get_names_from_fallback(sid_like_dir):
-    batch = _loader(sid_like_dir).get_batch(12, seed=0)
+    loader = _loader(sid_like_dir)
+    assert len(loader.dataset) == 8  # four tampered rows were removed
+    batch = loader.get_batch(8, seed=0)
     for sample in batch:
-        assert sample["label"] == (0 if sample["original_label"] == 0 else 1)
+        assert sample["original_label"] in (0, 1)
+        assert sample["label"] == sample["original_label"]
         assert sample["original_label_name"] == SID_SET_LABEL_NAMES[sample["original_label"]]
 
 
@@ -114,5 +118,14 @@ def test_mapped_labels_are_binary_and_silent(sid_like_dir):
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # any label warning becomes a failure
-        batch = _loader(sid_like_dir).get_batch(12, seed=0)
+        batch = _loader(sid_like_dir).get_batch(8, seed=0)
     assert {sample["label"] for sample in batch} <= {0, 1}
+    assert {sample["original_label"] for sample in batch} <= {0, 1}
+
+
+def test_local_preview_loader_excludes_tampered(sid_like_dir):
+    batch = SIDDataset().get_random_batch(
+        8, "validation", sid_like_dir / "data", seed=0
+    )
+    assert {sample["label"] for sample in batch} <= {0, 1}
+    assert {sample["binary_label"] for sample in batch} <= {0, 1}

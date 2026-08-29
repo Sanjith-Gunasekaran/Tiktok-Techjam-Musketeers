@@ -24,17 +24,35 @@ from PIL import Image
 IMAGE_COLUMN_CANDIDATES = ("image", "img", "picture", "photo")
 LABEL_COLUMN_CANDIDATES = ("label", "labels", "class", "target")
 
-# Team decision: the model is binary (0 = real, 1 = AI) and tampered images
-# count as AI. SID-Set has three classes (0 = real, 1 = fully synthetic,
-# 2 = tampered), so classes 1 and 2 both map to the AI label. If the dataset's
-# class order ever looks different, check original_label_name in a preview
-# batch before training.
-SID_SET_BINARY_LABEL_MAP = {0: 0, 1: 1, 2: 1}
+# Binary task: real (0) versus fully synthetic (1). Tampered images are a
+# separate editing task, so mapping them to None excludes them before batching.
+SID_SET_BINARY_LABEL_MAP = {0: 0, 1: 1, 2: None}
 
 # SID-Set stores label as a bare integer with no names attached (checked
 # against the dataset's config.json), so readable names must be supplied by
 # the caller via label_names=. These are SID-Set's classes in order.
 SID_SET_LABEL_NAMES = ("real", "full_synthetic", "tampered")
+
+
+def _label_is_included(
+    label: Any,
+    *,
+    excluded_labels: tuple[Any, ...],
+    label_names: tuple[str, ...] | None,
+) -> bool:
+    """Return false when a mapping marks a raw label or class name as None."""
+    try:
+        if label in excluded_labels:
+            return False
+    except (TypeError, ValueError):
+        pass
+    if (
+        label_names is not None
+        and isinstance(label, int)
+        and 0 <= label < len(label_names)
+    ):
+        return label_names[label] not in excluded_labels
+    return True
 
 
 class ImageDatasetLoader:
@@ -120,6 +138,7 @@ class ImageDatasetLoader:
         self.label_names = self._get_label_names() or (
             tuple(label_names) if label_names else None
         )
+        self._drop_excluded_labels()
 
     def get_batch(
         self, batch_size: int, *, seed: int | None = None
@@ -302,6 +321,23 @@ class ImageDatasetLoader:
                     stacklevel=3,
                 )
 
+    def _drop_excluded_labels(self) -> None:
+        """Filter labels whose mapping target is None before any sampling."""
+        if not isinstance(self.label_map, Mapping) or self.label_column is None:
+            return
+        excluded = tuple(
+            source for source, target in self.label_map.items() if target is None
+        )
+        if excluded:
+            self.dataset = self.dataset.filter(
+                _label_is_included,
+                input_columns=self.label_column,
+                fn_kwargs={
+                    "excluded_labels": excluded,
+                    "label_names": self.label_names,
+                },
+            )
+
     def _normalise_sample(self, row: Mapping[str, Any]) -> dict[str, Any]:
         """Turn one raw dataset row into a clean {image, label, metadata} sample."""
         image = self._decode_image(row[self.image_column])
@@ -480,7 +516,7 @@ def main() -> None:
     parser.add_argument(
         "--label-map",
         type=_parse_label_map,
-        help='comma-separated mapping, for example "0=0,1=1,2=1"',
+        help='comma-separated mapping; null drops a class, e.g. "0=0,1=1,2=null"',
     )
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)

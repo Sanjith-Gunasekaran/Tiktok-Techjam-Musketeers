@@ -3,22 +3,20 @@
 Working docs for the data-loading layer. See the repo root README for
 overall project scope.
 
-## Label convention (team decision): tampered counts as AI
+## Label convention
 
-The model is a **binary** classifier: `0 = real`, `1 = AI-generated`.
-SID-Set has three classes — real, fully synthetic, and tampered (a real photo
-with an AI-edited region) — and we map **both** synthetic and tampered to `1`.
-The mapping lives in the code as `SID_SET_BINARY_LABEL_MAP` so every script
-uses the same rule:
+The binary task is `0 = real`, `1 = fully synthetic`. SID-Set label `2`
+contains partially tampered photos, so it is excluded rather than mixed into
+the fully synthetic class. A mapping target of `None` filters that class before
+sampling or batching:
 
 ```python
-from data_loader import SID_SET_BINARY_LABEL_MAP   # {0: 0, 1: 1, 2: 1}
+from data_loader import SID_SET_BINARY_LABEL_MAP   # {0: 0, 1: 1, 2: None}
 ```
 
-Every sample also keeps the original 3-class label (`original_label`,
-`original_label_name`), so error analysis can still report tampered images
-separately. SID-Set stores its label as a bare integer with no names, so pass
-`label_names=SID_SET_LABEL_NAMES` to get readable names back.
+Returned samples keep their original label for traceability. Pass
+`label_names=SID_SET_LABEL_NAMES` because SID-Set stores labels as bare
+integers without class names.
 
 Other loader notes:
 
@@ -27,22 +25,12 @@ Other loader notes:
   `img_id` text reveals the label — metadata must never be fed to a model.
 - **Pin the dataset version** with `revision="<commit hash>"` for
   reproducible runs against Hugging Face sources.
-- **Always pass `label_map`** for training. Without it SID's 3-class labels
-  pass through unchanged and label `2` would reach a binary trainer; the
-  loader warns once if that happens.
+- **Always pass `label_map`** for training so label `2` is excluded before it
+  can reach the binary trainer.
 - Streaming is for exploration only (weak shuffle buffer). Training will go
   through the upcoming torch Dataset wrapper, not `iter_batches`.
 - Local shard folders are sanity-checked: duplicate shard filenames raise an
   error; fewer shards than the filenames promise triggers a warning.
-
-## What each file does
-
-| File | Purpose |
-| --- | --- |
-| `data_loader/__init__.py` | Makes `data_loader` importable as a package; exposes `ImageDatasetLoader` and `SID_SET_BINARY_LABEL_MAP`. |
-| `data_loader/image_dataset_loader.py` | **The main loader.** One API over local downloads (Parquet shards or image folders), Hugging Face, and Kaggle. Auto-detects image/label columns, remaps labels via `label_map`, iterates whole epochs (`iter_batches`), and has a CLI for previewing batches. |
-| `data_loader/batch_loader.py` | Tiny abstract base class: the contract a batch loader follows (return a random batch, decode one image). |
-| `data_loader/local_image_batch_loader.py` | Preview/debug tool for a locally downloaded SID-Set copy. Reads random samples straight out of the Parquet shards. Good for spot-checking a download; too slow to feed training. |
 
 ## What each file does
 
@@ -66,12 +54,17 @@ just give the loader that folder — it finds the shards, matches them to the
 requested split, and reads from disk with fast, truly shuffled random access:
 
 ```python
-from data_loader import ImageDatasetLoader, SID_SET_BINARY_LABEL_MAP
+from data_loader import (
+    ImageDatasetLoader,
+    SID_SET_BINARY_LABEL_MAP,
+    SID_SET_LABEL_NAMES,
+)
 
 loader = ImageDatasetLoader(
     "data",                               # folder containing the shards
     split="validation",
-    label_map=SID_SET_BINARY_LABEL_MAP,   # tampered counts as AI
+    label_map=SID_SET_BINARY_LABEL_MAP,
+    label_names=SID_SET_LABEL_NAMES,
 )
 
 batch = loader.get_batch(8, seed=42)
@@ -95,6 +88,7 @@ loader = ImageDatasetLoader(
     split="validation",
     streaming=False,                      # download once into the cache
     label_map=SID_SET_BINARY_LABEL_MAP,
+    label_names=SID_SET_LABEL_NAMES,
 )
 ```
 
@@ -113,21 +107,19 @@ Both options end the same way — data on disk, fast loading. Never do both.
 
 ## 3. Check the data once it's loaded
 
-Every sample is a dict with the decoded image, the binary training label, and
-the original 3-class truth:
+Every returned sample contains a decoded image and a binary label; tampered
+rows never reach the batch:
 
 ```python
 for sample in loader.get_batch(8, seed=42):
     print(
-        sample["label"],                  # 0 = real, 1 = AI (what the model trains on)
-        sample["original_label_name"],    # "real" / "full_synthetic" / "tampered"
+        sample["label"],                  # 0 = real, 1 = fully synthetic
+        sample["original_label_name"],    # "real" / "full_synthetic"
         sample["image"].size,             # decoded RGB PIL image
     )
 ```
 
-**Do this once before training:** confirm that class 0 prints as "real". If it
-ever does not, fix `SID_SET_BINARY_LABEL_MAP` first — a flipped mapping wastes
-a whole training run.
+Before training, confirm class `0` prints as `real` and no tampered row appears.
 
 Two more ways to eyeball the data:
 
@@ -139,7 +131,7 @@ python data_loader/local_image_batch_loader.py \
 # Save a previewed batch as JPEGs to look at:
 python -m data_loader.image_dataset_loader hf://saberzl/SID_Set \
   --split validation --batch-size 8 --seed 42 \
-  --label-map "0=0,1=1,2=1" --preview-dir batch_preview
+  --label-map "0=0,1=1,2=null" --preview-dir batch_preview
 ```
 
 ## 4. Other ways to stream or extract data
@@ -152,6 +144,7 @@ loader = ImageDatasetLoader(
     "hf://saberzl/SID_Set",
     split="train",
     label_map=SID_SET_BINARY_LABEL_MAP,
+    label_names=SID_SET_LABEL_NAMES,
 )
 batch = loader.get_batch(8, seed=0)
 ```

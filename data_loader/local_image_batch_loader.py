@@ -14,8 +14,10 @@ from typing import Any
 # when this file is run directly as a script from inside this folder.
 try:
     from .batch_loader import BatchLoader
+    from .image_dataset_loader import SID_SET_BINARY_LABEL_MAP
 except ImportError:
     from batch_loader import BatchLoader
+    from image_dataset_loader import SID_SET_BINARY_LABEL_MAP
 import pyarrow.parquet as pq
 from PIL import Image
 
@@ -26,7 +28,7 @@ IMAGE_COLUMNS = ["img_id", "image", "width", "height", "label"]
 
 
 class SIDDataset(BatchLoader):
-    """Load random SID-Set samples without loading the whole dataset."""
+    """Load random real/fully synthetic SID-Set samples from Parquet."""
 
     def get_random_batch(
         self, batch_size: int, split: str, data_dir: Path, seed: int
@@ -61,19 +63,33 @@ class SIDDataset(BatchLoader):
         # rows in each shard so one global index (0..total) can locate any row.
         parquet_files = [pq.ParquetFile(path) for path in shard_paths]
         shard_ends: list[int] = []
+        eligible_indices: list[int] = []
         total_rows = 0
         for parquet_file in parquet_files:
+            labels = [
+                int(value.as_py())
+                for value in parquet_file.read(columns=["label"])["label"]
+            ]
+            unknown = sorted(set(labels) - set(SID_SET_BINARY_LABEL_MAP))
+            if unknown:
+                raise ValueError(f"Unknown SID-Set labels: {unknown}")
+            eligible_indices.extend(
+                total_rows + index
+                for index, label in enumerate(labels)
+                if SID_SET_BINARY_LABEL_MAP[label] is not None
+            )
             total_rows += parquet_file.metadata.num_rows
             shard_ends.append(total_rows)
 
-        if batch_size > total_rows:
+        if batch_size > len(eligible_indices):
             raise ValueError(
-                f"batch_size ({batch_size}) exceeds the {total_rows} available images"
+                f"batch_size ({batch_size}) exceeds the {len(eligible_indices)} "
+                "available real/synthetic images"
             )
 
         # Pick random positions, then group them by shard so each file is
         # opened and read only once.
-        selected_indices = random.Random(seed).sample(range(total_rows), batch_size)
+        selected_indices = random.Random(seed).sample(eligible_indices, batch_size)
         rows_by_shard: dict[int, list[tuple[int, int]]] = defaultdict(list)
         for output_position, dataset_index in enumerate(selected_indices):
             shard_index = bisect_right(shard_ends, dataset_index)
@@ -112,6 +128,10 @@ class SIDDataset(BatchLoader):
                     }
                     image = self._decode_image(values["image"], data_dir)
                     width, height = image.size
+                    original_label = int(values["label"])
+                    binary_label = SID_SET_BINARY_LABEL_MAP[original_label]
+                    if binary_label is None:
+                        raise RuntimeError("Excluded tampered row reached the batch")
                     batch[output_position] = {
                         "img_id": values["img_id"],
                         "image": image,
@@ -119,10 +139,8 @@ class SIDDataset(BatchLoader):
                         # works if dimensions are absent or stale in the dataset.
                         "width": width,
                         "height": height,
-                        "label": int(values["label"]),
-                        # Team decision: tampered (class 2) counts as AI, so
-                        # every non-real class maps to the binary AI label 1.
-                        "binary_label": int(int(values["label"]) != 0),
+                        "label": original_label,
+                        "binary_label": binary_label,
                     }
 
         return [sample for sample in batch if sample is not None]

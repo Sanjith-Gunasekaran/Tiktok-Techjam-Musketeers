@@ -85,6 +85,9 @@ that comes from the organizers' external benchmark (DALL·E Advanced + COCO),
 which we never train on. md5 is used instead of Python's `hash()` because the
 built-in is randomized per process.
 
+The binary loader excludes tampered rows. Family handling remains here so a
+raw SID dataset can still be partitioned safely before label filtering.
+
 Not yet enforced: nothing calls `split_dataset` in a training path yet — the
 torch Dataset wrapper will make the isolation structural rather than a
 convention.
