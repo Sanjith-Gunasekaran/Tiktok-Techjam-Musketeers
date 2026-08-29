@@ -174,8 +174,31 @@ augmentation.
 
 ## Still to build on top of this layer
 
-- Augmentation module (JPEG / blur / resize / noise / color jitter / crop)
 - PyTorch `Dataset` wrapper producing the two-branch tensors, with a held-out
   test split carved out for the robustness table
 - Evaluation harness (clean vs. transformed metrics)
 - Balanced training-subset download script
+
+## Robustness transformations
+
+The `evaluation` package implements the real-world transformations used for robustness training and evaluation:
+
+- JPEG compression at qualities 90, 70, 50, and 30
+- Gaussian blur with sigma 0.5, 1.0, and 2.0
+- Resize to 0.5x and 0.25x followed by restoration
+- Gaussian noise with sigma 0.02, 0.05, and 0.10
+- Brightness and contrast changes of -20% and +20%
+- Center crop retaining 80% followed by restoration
+
+Run the automated tests:
+
+```bash
+python -m unittest evaluation.test_augmentations -v
+```
+
+Create a labelled visual preview:
+
+```bash
+python -m evaluation.preview_augmentations path/to/image.jpg \
+  --output augmentation_preview.jpg
+```
