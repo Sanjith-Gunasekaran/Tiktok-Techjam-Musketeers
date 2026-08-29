@@ -23,7 +23,7 @@ after ESSP) — trained with the challenge's transformations as augmentation.
 | Folder | What lives there | Docs |
 | --- | --- | --- |
 | `data_loader/` | Fetching + decoding images (local Parquet, Hugging Face, Kaggle); label mapping | [data_loader/README.md](data_loader/README.md) |
-| `pipeline/` | Augmentations; (upcoming) two-branch preprocessing, splits, torch Dataset, eval harness | [pipeline/README.md](pipeline/README.md) |
+| `pipeline/` | Augmentations, preprocessing, fixed splits, and torch DataLoaders | [pipeline/README.md](pipeline/README.md) |
 
 ## Setup
 
@@ -37,8 +37,8 @@ python -m pip install -r requirements.txt
 python -m pytest tests/
 ```
 
-Covers augmentations, both preprocessing views, the split carve-out, and the
-loader's label exclusion and SID-Set schema handling.
+Covers loading, label exclusion, augmentation, branch views, fixed splits,
+and the torch DataLoader factory.
 
 ## Roadmap
 
@@ -47,7 +47,7 @@ loader's label exclusion and SID-Set schema handling.
 - [x] Committed pytest suite (`tests/`)
 - [x] Two-branch preprocessing (DINOv2 view + simplest-patch view)
 - [x] Internal test-set carve-out
-- [ ] PyTorch Dataset wrapper + DataLoader factory
+- [x] PyTorch Dataset wrapper + DataLoader factory
 - [ ] Evaluation harness (clean vs. transformed table)
 - [ ] DINOv2 head, SRM forensics branch, score fusion
 - [ ] Inference script (image dir → JSON of `image_path`, `pred`)

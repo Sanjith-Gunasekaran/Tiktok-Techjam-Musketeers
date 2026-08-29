@@ -63,9 +63,17 @@ def split_dataset(dataset, id_column: str = "img_id", fraction: float = TEST_FRA
 
     ``dev`` is what day-to-day work may use (validation during training,
     threshold tuning); ``internal_test`` is only for the final evaluation.
-    Works on anything with a ``.filter(fn)`` method, e.g. Hugging Face
-    datasets.
+    Uses only the ID column, so Hugging Face does not decode images or masks
+    while splitting.
     """
-    test = dataset.filter(lambda row: is_internal_test(row[id_column], fraction))
-    dev = dataset.filter(lambda row: not is_internal_test(row[id_column], fraction))
+    filter_kwargs = {
+        "input_columns": id_column,
+        "fn_kwargs": {"fraction": fraction},
+    }
+    test = dataset.filter(is_internal_test, **filter_kwargs)
+    dev = dataset.filter(_is_internal_dev, **filter_kwargs)
     return dev, test
+
+
+def _is_internal_dev(image_id: str, fraction: float) -> bool:
+    return not is_internal_test(image_id, fraction)

@@ -7,14 +7,20 @@ import shutil
 
 import numpy as np
 import pytest
+import torch
 from PIL import Image
 
 datasets = pytest.importorskip("datasets")
 from datasets import Dataset, Features, Value
 from datasets import Image as HFImage
 
-from data_loader import SID_SET_BINARY_LABEL_MAP, SID_SET_LABEL_NAMES, ImageDatasetLoader
+from data_loader import (
+    SID_SET_BINARY_LABEL_MAP,
+    SID_SET_LABEL_NAMES,
+    ImageDatasetLoader,
+)
 from data_loader.local_image_batch_loader import SIDDataset
+from pipeline import BranchViewDataset, create_dataloaders, two_views
 
 
 def _png_bytes(seed):
@@ -55,6 +61,7 @@ def sid_like_dir(tmp_path):
 
     build(6, 0).to_parquet(root / "validation-00000-of-00002.parquet")
     build(6, 6).to_parquet(root / "validation-00001-of-00002.parquet")
+    build(12, 100).to_parquet(root / "train-00000-of-00001.parquet")
     return tmp_path / "data"
 
 
@@ -129,3 +136,41 @@ def test_local_preview_loader_excludes_tampered(sid_like_dir):
     )
     assert {sample["label"] for sample in batch} <= {0, 1}
     assert {sample["binary_label"] for sample in batch} <= {0, 1}
+
+
+def test_branch_views_share_one_augmented_image(sid_like_dir):
+    class SolidAugmentation:
+        calls = 0
+
+        def __call__(self, image):
+            self.calls += 1
+            return Image.new("RGB", image.size, (40, 80, 120))
+
+    source = _loader(sid_like_dir)
+    augmentation = SolidAugmentation()
+    dataset = BranchViewDataset(source, augmentation=augmentation)
+    actual = dataset[0][:2]
+    expected = two_views(Image.new("RGB", (48, 48), (40, 80, 120)))
+    assert augmentation.calls == 1
+    assert all(torch.equal(left, right) for left, right in zip(actual, expected))
+
+
+def test_dataloader_factory_builds_fixed_binary_splits(sid_like_dir):
+    loaders = create_dataloaders(
+        sid_like_dir,
+        batch_size=4,
+        num_workers=1,
+        seed=7,
+        test_fraction=0.5,
+    )
+    assert len(loaders.train.dataset) == 8
+    assert len(loaders.validation.dataset) + len(loaders.test.dataset) == 8
+    validation_ids = set(loaders.validation.dataset.rows["img_id"])
+    test_ids = set(loaders.test.dataset.rows["img_id"])
+    assert validation_ids.isdisjoint(test_ids)
+
+    dino, patch, label, original_label = next(iter(loaders.train))
+    assert dino.shape == (4, 3, 224, 224)
+    assert patch.shape == (4, 3, 32, 32)
+    assert set(label.tolist()) <= {0, 1}
+    assert set(original_label.tolist()) <= {0, 1}

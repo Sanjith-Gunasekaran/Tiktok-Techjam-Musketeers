@@ -27,8 +27,8 @@ Other loader notes:
   reproducible runs against Hugging Face sources.
 - **Always pass `label_map`** for training so label `2` is excluded before it
   can reach the binary trainer.
-- Streaming is for exploration only (weak shuffle buffer). Training will go
-  through the upcoming torch Dataset wrapper, not `iter_batches`.
+- Streaming is for exploration only (weak shuffle buffer). Training uses
+  `pipeline.create_dataloaders`, which forces random-access loading.
 - Local shard folders are sanity-checked: duplicate shard filenames raise an
   error; fewer shards than the filenames promise triggers a warning.
 

@@ -31,9 +31,8 @@ Notes:
   includes `chain_crop_resize_jpeg` (crop + thumbnail + JPEG together).
 - `crop_80` and the chain output smaller images on purpose; branch
   preprocessing resizes where needed.
-- **DataLoader workers**: forked workers copy this object's random state and
-  would emit duplicate augmentation streams — call `augment.reseed(base + worker_id)`
-  from a `worker_init_fn`.
+- **DataLoader workers** need separate random states. `create_dataloaders`
+  handles this automatically.
 
 ## `pipeline/preprocess.py` — the two branch views
 
@@ -88,6 +87,30 @@ built-in is randomized per process.
 The binary loader excludes tampered rows. Family handling remains here so a
 raw SID dataset can still be partitioned safely before label filtering.
 
-Not yet enforced: nothing calls `split_dataset` in a training path yet — the
-torch Dataset wrapper will make the isolation structural rather than a
-convention.
+`create_dataloaders` applies this split before constructing the validation and
+test loaders, so the frozen test set cannot enter training or validation.
+
+## `pipeline/torch_dataset.py` — training input pipeline
+
+The factory loads SID-Set without streaming, excludes tampered rows, augments
+each training image once, and then creates both branch views. Validation and
+test are not augmented or shuffled.
+
+```python
+from pipeline import create_dataloaders
+
+loaders = create_dataloaders(
+    "data", batch_size=64, num_workers=4, seed=42
+)
+for dino_tensor, patch_tensor, label, original_label in loaders.train:
+    train_step(dino_tensor, patch_tensor, label)
+```
+
+Train uses SID-Set's published training split. The published validation split
+is deterministically divided into validation and frozen internal test sets.
+Their membership never changes between epochs or runs; only training order and
+augmentation change. `original_label` is retained for provenance, but is only
+`0` or `1` because tampered rows are excluded. The patch tensor is raw input
+for the model's frozen SRM layer—it is not yet SRM-filtered. Freeze
+`test_fraction` before experiments; changing it changes the holdout and
+invalidates comparisons. This is one stable split, not cross-validation.

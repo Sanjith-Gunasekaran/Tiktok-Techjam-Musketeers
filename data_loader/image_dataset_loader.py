@@ -155,7 +155,7 @@ class ImageDatasetLoader:
             rng = random.Random(seed)
             indices = rng.sample(range(len(self.dataset)), batch_size)
             batch = [
-                self._normalise_sample(self.dataset[index]) for index in indices
+                self.normalise_sample(self.dataset[index]) for index in indices
             ]
         else:
             dataset = self.dataset
@@ -178,7 +178,7 @@ class ImageDatasetLoader:
                         row = next(row_iterator)
                     except StopIteration:
                         break
-                    batch.append(self._normalise_sample(row))
+                    batch.append(self.normalise_sample(row))
             finally:
                 close = getattr(row_iterator, "close", None)
                 if close is not None:
@@ -218,7 +218,7 @@ class ImageDatasetLoader:
 
         batch: list[dict[str, Any]] = []
         for row in dataset:
-            batch.append(self._normalise_sample(row))
+            batch.append(self.normalise_sample(row))
             if len(batch) == batch_size:
                 yield batch
                 batch = []
@@ -338,7 +338,7 @@ class ImageDatasetLoader:
                 },
             )
 
-    def _normalise_sample(self, row: Mapping[str, Any]) -> dict[str, Any]:
+    def normalise_sample(self, row: Mapping[str, Any]) -> dict[str, Any]:
         """Turn one raw dataset row into a clean {image, label, metadata} sample."""
         image = self._decode_image(row[self.image_column])
         if self.convert_mode is not None:
