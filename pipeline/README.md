@@ -48,3 +48,21 @@ dino_tensor, srm_tensor = two_views(pil_image)   # both at once
 - Order matters: augment first, then take the views, so both branches see the
   same degraded image.
 
+## `pipeline/splits.py` — frozen internal test set
+
+We need a test set no training decision ever touches, for the final
+robustness table. Membership is decided by hashing each image's ID, so the
+same image lands in the same split on every machine, every run — nothing to
+store or sync:
+
+```python
+from pipeline import is_internal_test, split_dataset
+
+is_internal_test("img_1234")          # True -> frozen test set (default 20%)
+dev, test = split_dataset(hf_dataset) # filter a whole dataset in one call
+```
+
+Rules: `dev` is for day-to-day work (validation during training, tuning);
+`test` is only for the final evaluation. md5 is used instead of Python's
+`hash()` because the built-in is randomized per process.
+
