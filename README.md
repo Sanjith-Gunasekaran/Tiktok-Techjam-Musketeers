@@ -172,10 +172,37 @@ wrong target.
 `transform=` (a function applied to every image) for tensor conversion or
 augmentation.
 
+## Feature pipeline (`pipeline/`)
+
+Everything between raw images and model-ready inputs lives in the `pipeline`
+package.
+
+### `pipeline/augmentations.py` — image degradations
+
+The brief's six real-world transformations, implemented once and exposed two
+ways so training and evaluation can never drift apart:
+
+```python
+from pipeline import EVAL_GRID, RandomAugment
+
+# Training: one random transform at a random strength on ~50% of images.
+augment = RandomAugment(probability=0.5, seed=42)
+degraded = augment(pil_image)
+
+# Evaluation: the brief's exact parameter grid, deterministic.
+for name, transform in EVAL_GRID.items():   # clean, jpeg_q90 ... crop_80 (16 entries)
+    score_model_on(transform(pil_image))
+```
+
+Notes: JPEG is a real encode/decode, not an approximation; eval noise is
+seeded so runs are repeatable; `crop_80` outputs a smaller image on purpose
+(branch preprocessing resizes later where needed); with DataLoader workers,
+give each worker its own `RandomAugment` seed.
+
 ## Still to build on top of this layer
 
-- Augmentation module (JPEG / blur / resize / noise / color jitter / crop)
-- PyTorch `Dataset` wrapper producing the two-branch tensors, with a held-out
-  test split carved out for the robustness table
-- Evaluation harness (clean vs. transformed metrics)
+- Two-branch preprocessing (DINOv2 view + raw-pixel simplest-patch view)
+- Deterministic internal test-set carve-out from the validation split
+- PyTorch `Dataset` wrapper tying loader + augmentation + both views together
+- Evaluation harness (clean vs. transformed metrics table)
 - Balanced training-subset download script
