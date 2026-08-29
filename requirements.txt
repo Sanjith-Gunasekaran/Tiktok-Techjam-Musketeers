@@ -3,3 +3,4 @@ kagglehub
 numpy
 Pillow
 pyarrow
+torch
