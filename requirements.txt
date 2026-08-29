@@ -2,3 +2,4 @@ datasets
 kagglehub
 Pillow
 pyarrow
+numpy

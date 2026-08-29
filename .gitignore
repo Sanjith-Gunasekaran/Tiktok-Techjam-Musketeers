@@ -10,3 +10,4 @@ checkpoints/
 *.pth
 .cache/
 reports/
+.DS_Store
