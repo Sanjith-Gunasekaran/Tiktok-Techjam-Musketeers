@@ -56,21 +56,14 @@ batch = loader.get_batch(8, seed=42)
 Asking for a split that is not in the folder raises an error listing the
 splits that are actually there.
 
-For reference, a local copy is created with the Hugging Face CLI (the full
-dataset is ~116 GB, so consider starting with the validation split):
+## 2. No local copy? Two ways to get one (pick one, run once)
 
-```bash
-curl -LsSf https://hf.co/cli/install.sh | bash -s
-hf download saberzl/SID_Set --type dataset \
-  --include "data/validation-*.parquet" \
-  --local-dir data
-```
+Sections 1 and 2 are alternatives, not steps: if section 1 applied to you,
+skip this entirely.
 
-## 2. No local copy? Let the program download it
-
-Use the Hugging Face ID with `streaming=False`. The `datasets` library
-downloads the split into its own cache the first time this runs, and every
-later run reads from disk — same end result as option 1, no manual steps:
+**Option A — let the program download it.** Use the Hugging Face ID with
+`streaming=False`. The `datasets` library downloads the split into its own
+cache the first time this runs, and every later run reads from disk:
 
 ```python
 loader = ImageDatasetLoader(
@@ -80,6 +73,19 @@ loader = ImageDatasetLoader(
     label_map=SID_SET_BINARY_LABEL_MAP,
 )
 ```
+
+**Option B — download manually with the Hugging Face CLI.** This gives you a
+visible folder of Parquet files (which section 1 then loads). The full dataset
+is ~116 GB, so consider starting with the validation split:
+
+```bash
+curl -LsSf https://hf.co/cli/install.sh | bash -s
+hf download saberzl/SID_Set --type dataset \
+  --include "data/validation-*.parquet" \
+  --local-dir data
+```
+
+Both options end the same way — data on disk, fast loading. Never do both.
 
 ## 3. Check the data once it's loaded
 
