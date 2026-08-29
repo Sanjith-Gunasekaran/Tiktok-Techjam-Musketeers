@@ -10,7 +10,12 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from batch_loader import BatchLoader
+# Works when imported as part of the data_loader package (the dotted form) and
+# when this file is run directly as a script from inside this folder.
+try:
+    from .batch_loader import BatchLoader
+except ImportError:
+    from batch_loader import BatchLoader
 import pyarrow.parquet as pq
 from PIL import Image
 
@@ -52,6 +57,8 @@ class SIDDataset(BatchLoader):
                 f"No Parquet shards for split {split!r} were found in {data_dir}"
             )
 
+        # The dataset is stored as several Parquet files ("shards"). Count the
+        # rows in each shard so one global index (0..total) can locate any row.
         parquet_files = [pq.ParquetFile(path) for path in shard_paths]
         shard_ends: list[int] = []
         total_rows = 0
@@ -64,6 +71,8 @@ class SIDDataset(BatchLoader):
                 f"batch_size ({batch_size}) exceeds the {total_rows} available images"
             )
 
+        # Pick random positions, then group them by shard so each file is
+        # opened and read only once.
         selected_indices = random.Random(seed).sample(range(total_rows), batch_size)
         rows_by_shard: dict[int, list[tuple[int, int]]] = defaultdict(list)
         for output_position, dataset_index in enumerate(selected_indices):
@@ -76,6 +85,8 @@ class SIDDataset(BatchLoader):
         batch: list[dict[str, Any] | None] = [None] * batch_size
         for shard_index, requested_rows in rows_by_shard.items():
             parquet_file = parquet_files[shard_index]
+            # Parquet stores rows in blocks called "row groups". Work out which
+            # block each wanted row lives in so only those blocks are read.
             row_group_ends: list[int] = []
             row_count = 0
             for group_index in range(parquet_file.metadata.num_row_groups):
@@ -109,6 +120,9 @@ class SIDDataset(BatchLoader):
                         "width": width,
                         "height": height,
                         "label": int(values["label"]),
+                        # Team decision: tampered (class 2) counts as AI, so
+                        # every non-real class maps to the binary AI label 1.
+                        "binary_label": int(int(values["label"]) != 0),
                     }
 
         return [sample for sample in batch if sample is not None]
@@ -156,7 +170,7 @@ def main() -> None:
     for sample in batch:
         print(
             f"{sample['img_id']}: {sample['width']}x{sample['height']}, "
-            f"label={sample['label']}"
+            f"label={sample['label']}, binary_label={sample['binary_label']}"
         )
 
 
