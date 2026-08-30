@@ -30,3 +30,14 @@ def test_run_epoch_trains_one_branch_on_synthetic_batches() -> None:
     assert set(metrics) == {"loss", "accuracy", "auc"}
     assert 0.0 <= metrics["accuracy"] <= 1.0
     assert 0.0 <= metrics["auc"] <= 1.0
+
+
+def test_single_class_epoch_reports_undefined_auc() -> None:
+    batch = (
+        torch.randn(2, 3, 224, 224),
+        torch.randn(2, 3, 32, 32),
+        torch.tensor([1, 1]),
+        torch.tensor([1, 1]),
+    )
+
+    assert run_epoch(MeanLogit(), "dino_head", [batch], torch.device("cpu"))["auc"] is None

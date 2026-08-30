@@ -35,6 +35,7 @@ class ForensicCNN(nn.Module):
         super().__init__()
         if not 0.0 <= dropout < 1.0:
             raise ValueError("dropout must be in [0, 1)")
+        self.dropout = dropout
         self.srm = SRMFilterBank(clip_value=srm_clip_value)
         self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
         self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
@@ -62,3 +63,6 @@ class ForensicCNN(nn.Module):
             dtype=patches.dtype
         )
         return self.classifier(self.features(self.srm(patches))).squeeze(1)
+
+    def checkpoint_config(self) -> dict[str, object]:
+        return {"model_type": "forensic_cnn", "dropout": self.dropout, "srm_clip_value": self.srm.clip_value}

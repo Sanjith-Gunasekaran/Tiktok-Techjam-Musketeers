@@ -41,6 +41,7 @@ class DINOClassifier(nn.Module):
 
         self.backbone = backbone
         self.model_name, self.revision = model_name, revision
+        self.hidden_dim, self.dropout = hidden_dim, dropout
         self.classifier = nn.Sequential(
             nn.LayerNorm(feature_dim),
             nn.Linear(feature_dim, hidden_dim),
@@ -133,4 +134,6 @@ class DINOClassifier(nn.Module):
             "revision": self.revision,
             "backbone_state": self._backbone_state,
             "unfrozen_blocks": self._unfrozen_blocks,
+            "hidden_dim": self.hidden_dim,
+            "dropout": self.dropout,
         }

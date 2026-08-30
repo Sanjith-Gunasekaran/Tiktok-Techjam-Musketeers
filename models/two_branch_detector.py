@@ -95,4 +95,4 @@ class TwoBranchDetector(nn.Module):
 
     def checkpoint_config(self) -> dict[str, object]:
         """Configuration training code should save beside ``state_dict``."""
-        return {"fusion_mode": self.fusion_mode, "dino_weight": self.dino_weight.item(), "branches_frozen": self._branches_frozen}
+        return {"fusion_mode": self.fusion_mode, "dino_weight": self.dino_weight.item(), "branches_frozen": self._branches_frozen, "dino": getattr(self.dino, "checkpoint_config", lambda: {})(), "forensic": getattr(self.forensic, "checkpoint_config", lambda: {})()}

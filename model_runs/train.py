@@ -29,7 +29,7 @@ STAGES = ("dino_head", "dino_finetune", "forensic", "fusion")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", choices=STAGES, required=True)
-    parser.add_argument("--data-dir", type=Path, default=Path("data"))
+    parser.add_argument("--data-dir", type=str, default="data")
     parser.add_argument("--output-dir", type=Path, default=Path("model_runs/checkpoints"))
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--dino-checkpoint", type=Path)
@@ -44,8 +44,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--seed", type=int, default=67)
-    parser.add_argument("--augmentation-probability", type=float, default=0.0)
-    parser.add_argument("--second-augmentation-probability", type=float, default=0.0)
+    parser.add_argument("--augmentation-probability", type=float, default=0.5)
+    parser.add_argument("--second-augmentation-probability", type=float, default=0.3)
+    parser.add_argument("--no-augment", action="store_true")
     parser.add_argument("--srm-clip-value", type=float, default=3.0)
     parser.add_argument("--fusion-mode", choices=("fixed", "learned"), default="learned")
     parser.add_argument("--dino-weight", type=float, default=0.5)
@@ -99,13 +100,17 @@ def run_epoch(model: nn.Module, stage: str, batches: Iterable[Batch], device: to
         raise ValueError("Cannot run an epoch with an empty DataLoader")
     labels_np, logits_np = np.asarray(labels_all), np.asarray(logits_all)
     predicted = logits_np >= 0
-    auc = binary_auc(labels_np, logits_np) if set(labels_np) == {0, 1} else float("nan")
+    auc = binary_auc(labels_np, logits_np) if set(labels_np) == {0, 1} else None
     return {"loss": sum(losses) / len(labels_np), "accuracy": float((predicted == labels_np).mean()), "auc": auc}
 
 
 def load_state(model: nn.Module, path: Path, device: torch.device) -> None:
-    checkpoint = torch.load(path, map_location=device, weights_only=False)
+    checkpoint = torch.load(path, map_location=device, weights_only=True)
     model.load_state_dict(checkpoint["model_state_dict"])
+
+
+def display_metric(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.4f}"
 
 
 def build_model(args: argparse.Namespace, device: torch.device) -> tuple[nn.Module, list[dict[str, Any]]]:
@@ -138,7 +143,8 @@ def build_model(args: argparse.Namespace, device: torch.device) -> tuple[nn.Modu
 
 def save_checkpoint(path: Path, model: nn.Module, optimizer: torch.optim.Optimizer, epoch: int, metrics: dict[str, float], best_auc: float, args: argparse.Namespace) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"epoch": epoch, "stage": args.stage, "best_auc": best_auc, "model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(), "metrics": metrics, "args": vars(args), "model_config": getattr(model, "checkpoint_config", lambda: {})()}, path)
+    config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
+    torch.save({"format_version": 1, "epoch": epoch, "stage": args.stage, "best_auc": best_auc, "model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(), "metrics": metrics, "args": config, "model_config": getattr(model, "checkpoint_config", lambda: {})()}, path)
 
 
 def main() -> None:
@@ -149,13 +155,15 @@ def main() -> None:
         raise ValueError("max batch counts must be positive")
     seed_everything(args.seed)
     device = choose_device()
+    if args.no_augment:
+        args.augmentation_probability = args.second_augmentation_probability = 0.0
     loaders = create_dataloaders(args.data_dir, batch_size=args.batch_size, num_workers=args.num_workers, seed=args.seed, pin_memory=device.type == "cuda", augmentation_probability=args.augmentation_probability, second_augmentation_probability=args.second_augmentation_probability)
     model, groups = build_model(args, device)
     model = model.to(device)
     optimizer = torch.optim.AdamW(groups, weight_decay=args.weight_decay)
     start_epoch, best_auc = 1, float("-inf")
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
+        checkpoint = torch.load(args.resume, map_location=device, weights_only=True)
         if checkpoint["stage"] != args.stage:
             raise ValueError("resume checkpoint stage does not match --stage")
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -165,7 +173,9 @@ def main() -> None:
     for epoch in range(start_epoch, args.epochs + 1):
         train_metrics = run_epoch(model, args.stage, loaders.train, device, optimizer, args.max_train_batches)
         validation = run_epoch(model, args.stage, loaders.validation, device, max_batches=args.max_validation_batches)
-        print(f"epoch {epoch:02d} | train auc {train_metrics['auc']:.4f} | validation auc {validation['auc']:.4f}")
+        if validation["auc"] is None:
+            raise RuntimeError("Validation contains only one class; increase --max-validation-batches or inspect the split.")
+        print(f"epoch {epoch:02d} | train auc {display_metric(train_metrics['auc'])} | validation auc {display_metric(validation['auc'])}")
         improved = validation["auc"] > best_auc
         if improved:
             best_auc = validation["auc"]
