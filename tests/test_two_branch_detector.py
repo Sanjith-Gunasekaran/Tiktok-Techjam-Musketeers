@@ -70,3 +70,12 @@ def test_fusion_weight_is_saved_and_restored() -> None:
     restored.load_state_dict(model.state_dict())
 
     assert restored.dino_weight.item() == pytest.approx(0.3)
+
+
+def test_learned_fusion_receives_gradients_with_frozen_branches() -> None:
+    model = TwoBranchDetector(TrainableBranch(), TrainableBranch(), fusion_mode="learned")
+    model.freeze_branches()
+    model(torch.randn(2, 3, 224, 224, requires_grad=True), torch.randn(2, 3, 32, 32, requires_grad=True)).sum().backward()
+
+    assert model.fusion is not None and model.fusion.weight.grad is not None
+    assert all(parameter.grad is None for branch in (model.dino, model.forensic) for parameter in branch.parameters())

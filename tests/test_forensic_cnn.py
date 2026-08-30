@@ -71,6 +71,12 @@ def test_srm_filters_clip_strong_residuals() -> None:
     patches[:, :, 2:7, 2:7] = (bank.kernels[1, 0] > 0).to(torch.float32)
 
     assert bank(patches)[0, 1, 2, 2] == 3.0
+    assert bank.clipping_fraction(patches) > 0
+
+
+def test_srm_filters_allow_clipping_to_be_disabled() -> None:
+    bank = SRMFilterBank(clip_value=None)
+    assert bank.clipping_fraction(torch.rand(1, 3, 32, 32)) == 0.0
 
 
 def test_forensic_cnn_accepts_pipeline_patch(textured_image) -> None:

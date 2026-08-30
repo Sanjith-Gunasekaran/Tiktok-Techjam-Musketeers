@@ -49,7 +49,7 @@ the DataLoader factory, and end-to-end transform-grid evaluation.
 - [x] Internal test-set carve-out
 - [x] PyTorch Dataset wrapper + DataLoader factory
 - [x] Evaluation harness (clean vs. transformed CSV/Markdown table)
-- [ ] DINOv2 head, SRM forensics branch, score fusion
+- [x] DINOv2 head, SRM forensics branch, score fusion
 - [ ] Inference script (image dir → JSON of `image_path`, `pred`)
 
 This root README will become the final consolidated project documentation

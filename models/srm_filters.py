@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -45,9 +47,12 @@ class SRMFilterBank(nn.Module):
     update them.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, clip_value: float | None = 3.0) -> None:
         super().__init__()
+        if clip_value is not None and (not math.isfinite(clip_value) or clip_value <= 0):
+            raise ValueError("clip_value must be positive or None")
         self.register_buffer("kernels", _kernels(), persistent=True)
+        self.clip_value = clip_value
 
     def forward(self, patches: torch.Tensor) -> torch.Tensor:
         """Return clipped valid-convolution residual maps."""
@@ -60,4 +65,16 @@ class SRMFilterBank(nn.Module):
             raise ValueError(f"SRM patches must be at least {kernel_size}x{kernel_size}")
 
         kernels = self.kernels.to(dtype=patches.dtype).repeat(1, 3, 1, 1)
-        return F.hardtanh(F.conv2d(patches, kernels), min_val=-3.0, max_val=3.0)
+        residuals = F.conv2d(patches, kernels)
+        if self.clip_value is None:
+            return residuals
+        return F.hardtanh(residuals, min_val=-self.clip_value, max_val=self.clip_value)
+
+    @torch.no_grad()
+    def clipping_fraction(self, patches: torch.Tensor) -> float:
+        """Return the fraction of residual values affected by clipping."""
+        if self.clip_value is None:
+            return 0.0
+        kernels = self.kernels.to(dtype=patches.dtype).repeat(1, 3, 1, 1)
+        residuals = F.conv2d(patches, kernels)
+        return (residuals.abs() >= self.clip_value).float().mean().item()

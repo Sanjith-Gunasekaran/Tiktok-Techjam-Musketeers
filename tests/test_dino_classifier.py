@@ -65,7 +65,7 @@ def test_backbone_can_unfreeze_only_its_final_blocks():
     model.unfreeze_last_blocks(2)
     model.train()
 
-    assert model.backbone.training
+    assert not model.backbone.training
     assert all(not parameter.requires_grad for parameter in model.backbone.projection.parameters())
     assert all(
         not parameter.requires_grad for block in model.backbone.encoder.layer[:2] for parameter in block.parameters()
@@ -74,6 +74,7 @@ def test_backbone_can_unfreeze_only_its_final_blocks():
         parameter.requires_grad for block in model.backbone.encoder.layer[2:] for parameter in block.parameters()
     )
     assert all(parameter.requires_grad for parameter in model.backbone.layernorm.parameters())
+    assert all(block.training for block in model.backbone.encoder.layer[2:])
 
 
 @pytest.mark.parametrize("count", [0, -1, 5])
@@ -86,3 +87,12 @@ def test_invalid_input_shape_is_rejected():
     model = DINOClassifier(backbone=FakeDINO())
     with pytest.raises(ValueError, match="shape"):
         model(torch.randn(3, 224, 224))
+
+
+def test_predict_proba_is_deterministic_and_restores_training_mode():
+    model = DINOClassifier(backbone=FakeDINO(), hidden_dim=8, dropout=0.8)
+    model.train()
+    images = torch.randn(2, 3, 224, 224)
+
+    assert torch.equal(model.predict_proba(images), model.predict_proba(images))
+    assert model.training and not model.backbone.training

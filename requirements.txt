@@ -5,4 +5,5 @@ Pillow>=10.0
 pyarrow>=15.0
 pytest>=8.0
 torch>=2.2
+transformers>=4.42
 transformers>=4.40

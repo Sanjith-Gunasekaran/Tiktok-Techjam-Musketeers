@@ -31,11 +31,11 @@ class ForensicCNN(nn.Module):
 
     patch_size = 32
 
-    def __init__(self, dropout: float = 0.2) -> None:
+    def __init__(self, dropout: float = 0.2, *, srm_clip_value: float | None = 3.0) -> None:
         super().__init__()
         if not 0.0 <= dropout < 1.0:
             raise ValueError("dropout must be in [0, 1)")
-        self.srm = SRMFilterBank()
+        self.srm = SRMFilterBank(clip_value=srm_clip_value)
         self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
         self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
         self.features = nn.Sequential(
