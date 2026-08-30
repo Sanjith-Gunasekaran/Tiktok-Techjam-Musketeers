@@ -166,9 +166,11 @@ def main() -> None:
         train_metrics = run_epoch(model, args.stage, loaders.train, device, optimizer, args.max_train_batches)
         validation = run_epoch(model, args.stage, loaders.validation, device, max_batches=args.max_validation_batches)
         print(f"epoch {epoch:02d} | train auc {train_metrics['auc']:.4f} | validation auc {validation['auc']:.4f}")
-        save_checkpoint(checkpoint_dir / "last.pt", model, optimizer, epoch, validation, best_auc, args)
-        if validation["auc"] > best_auc:
+        improved = validation["auc"] > best_auc
+        if improved:
             best_auc = validation["auc"]
+        save_checkpoint(checkpoint_dir / "last.pt", model, optimizer, epoch, validation, best_auc, args)
+        if improved:
             save_checkpoint(checkpoint_dir / "best.pt", model, optimizer, epoch, validation, best_auc, args)
 
 
