@@ -82,6 +82,27 @@ class DINOClassifier(nn.Module):
         if self.freeze_backbone:
             self.backbone.eval() # pyright: ignore
 
+    def unfreeze_last_blocks(self, count: int) -> None:
+        """Train the final ``count`` DINOv2 blocks and final layer norm only."""
+        if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+            raise ValueError("count must be a positive integer")
+        layers = getattr(getattr(self.backbone, "encoder", None), "layer", None)
+        if not isinstance(layers, nn.ModuleList):
+            raise ValueError("backbone must expose encoder.layer as a ModuleList")
+        if count > len(layers):
+            raise ValueError("count cannot exceed the number of encoder blocks")
+
+        self.set_backbone_trainable(False)
+        for block in layers[-count:]:
+            for parameter in block.parameters():
+                parameter.requires_grad = True
+        layernorm = getattr(self.backbone, "layernorm", None)
+        if isinstance(layernorm, nn.Module):
+            for parameter in layernorm.parameters():
+                parameter.requires_grad = True
+        self.freeze_backbone = False
+        self.backbone.train(self.training) # pyright: ignore
+
     def train(self, mode: bool = True) -> "DINOClassifier":
         """Keep a frozen backbone in evaluation mode while training the head."""
         super().train(mode)
