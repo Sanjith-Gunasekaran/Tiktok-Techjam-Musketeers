@@ -125,8 +125,10 @@ their change from clean to CSV and Markdown.
 ```python
 from pipeline import evaluate_model
 
-report = evaluate_model(model, loaders, output_dir="evaluation")
-print(report.csv_path, report.markdown_path)
+report = evaluate_model(
+    model, loaders, output_dir="evaluation", save_predictions=True
+)
+print(report.csv_path, report.markdown_path, report.error_path)
 ```
 
 The model must return one synthetic-class probability per image (`[B]` or
@@ -134,10 +136,8 @@ The model must return one synthetic-class probability per image (`[B]` or
 fixed at `0.5` by default; select any other threshold on validation before
 calling the evaluator. Never tune the model or threshold from this test table.
 
-Each `report.rows` entry (`EvaluationRow`) carries `samples`/`real`/`synthetic`
-counts, `accuracy`/`auc`, and their change versus the `clean` row — the two
-written files (`clean_vs_transformed.csv`/`.md`) are the same rows, formatted.
-Passing a custom `transforms=` mapping (instead of the full `EVAL_GRID`) must
-still include a `"clean"` entry, since every delta is measured against it.
-`binary_auc` (rank-based ROC AUC, ties handled) is exported separately in case
-another script wants it standalone.
+Each `report.rows` entry carries TP/TN/FP/FN, accuracy, precision, recall, F1,
+AUC, and changes versus clean. `error_analysis.csv` always contains only false
+positives/negatives with their image IDs and scores. Full predictions are large,
+so `predictions.jsonl.gz` is written only with `save_predictions=True`.
+Passing a custom `transforms=` mapping must still include a `"clean"` entry.

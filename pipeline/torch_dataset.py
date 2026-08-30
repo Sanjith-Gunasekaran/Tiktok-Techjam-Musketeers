@@ -33,6 +33,7 @@ class BranchViewDataset(Dataset[BranchSample]):
         rows: HFDataset | None = None,
         augmentation: Callable[[Image.Image], Image.Image] | None = None,
         partition: str | None = None,
+        id_column: str | None = None,
     ) -> None:
         if source.transform is not None:
             raise ValueError("ImageDatasetLoader.transform must be None")
@@ -43,6 +44,7 @@ class BranchViewDataset(Dataset[BranchSample]):
         self.rows = selected_rows
         self.augmentation = augmentation
         self.partition = partition
+        self.id_column = id_column
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -157,13 +159,22 @@ def create_dataloaders(
         seed=seed,
     )
     train_dataset = BranchViewDataset(
-        train_source, augmentation=augmentation, partition="train"
+        train_source,
+        augmentation=augmentation,
+        partition="train",
+        id_column=id_column,
     )
     validation_dataset = BranchViewDataset(
-        validation_source, validation_rows, partition="validation"
+        validation_source,
+        validation_rows,
+        partition="validation",
+        id_column=id_column,
     )
     test_dataset = BranchViewDataset(
-        validation_source, test_rows, partition="test"
+        validation_source,
+        test_rows,
+        partition="test",
+        id_column=id_column,
     )
 
     loader_options = {

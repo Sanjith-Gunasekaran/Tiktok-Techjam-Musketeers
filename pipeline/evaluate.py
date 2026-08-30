@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import csv
+import gzip
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -23,7 +25,14 @@ class EvaluationRow:
     samples: int
     real: int
     synthetic: int
+    true_positive: int
+    true_negative: int
+    false_positive: int
+    false_negative: int
     accuracy: float
+    precision: float
+    recall: float
+    f1: float
     auc: float
     accuracy_delta_vs_clean: float
     auc_delta_vs_clean: float
@@ -33,6 +42,8 @@ class EvaluationReport(NamedTuple):
     rows: tuple[EvaluationRow, ...]
     csv_path: Path
     markdown_path: Path
+    error_path: Path
+    predictions_path: Path | None
 
 
 @dataclass(frozen=True)
@@ -94,8 +105,9 @@ def evaluate_model(
     from_logits: bool = False,
     device: str | torch.device | None = None,
     transforms: Mapping[str, Any] = EVAL_GRID,
+    save_predictions: bool = False,
 ) -> EvaluationReport:
-    """Evaluate every transform and write CSV and Markdown reports.
+    """Evaluate every transform and write summary and error reports.
 
     ``model(dino_batch, patch_batch)`` must return one synthetic-class score
     per image. Probabilities use the fixed ``threshold``; pass
@@ -125,7 +137,8 @@ def evaluate_model(
     if callable(eval_method):
         eval_method()
 
-    metrics: list[tuple[str, np.ndarray, np.ndarray]] = []
+    image_ids = _image_ids(test_dataset)
+    metrics: list[tuple[str, np.ndarray, np.ndarray, tuple[str, ...]]] = []
     try:
         with torch.inference_mode():
             for name, transform in conditions:
@@ -137,7 +150,7 @@ def evaluate_model(
                     target_device,
                     from_logits,
                 )
-                metrics.append((name, labels, scores))
+                metrics.append((name, labels, scores, image_ids))
     finally:
         if was_training is True:
             train_method = getattr(model, "train", None)
@@ -149,9 +162,17 @@ def evaluate_model(
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "clean_vs_transformed.csv"
     markdown_path = output_dir / "clean_vs_transformed.md"
+    error_path = output_dir / "error_analysis.csv"
     _write_csv(rows, csv_path)
     _write_markdown(rows, markdown_path)
-    return EvaluationReport(tuple(rows), csv_path, markdown_path)
+    _write_errors(metrics, threshold, error_path)
+    predictions_path = None
+    if save_predictions:
+        predictions_path = output_dir / "predictions.jsonl.gz"
+        _write_predictions(metrics, threshold, predictions_path)
+    return EvaluationReport(
+        tuple(rows), csv_path, markdown_path, error_path, predictions_path
+    )
 
 
 def _evaluate_condition(
@@ -169,6 +190,7 @@ def _evaluate_condition(
         base_dataset.rows,
         augmentation=CheckedTransform(transform),
         partition="test",
+        id_column=base_dataset.id_column,
     )
     loader = DataLoader(
         dataset,
@@ -209,26 +231,144 @@ def _probabilities(output: Any, batch_size: int, from_logits: bool) -> np.ndarra
 
 
 def _metric_rows(
-    metrics: list[tuple[str, np.ndarray, np.ndarray]], threshold: float
+    metrics: list[tuple[str, np.ndarray, np.ndarray, tuple[str, ...]]],
+    threshold: float,
 ) -> list[EvaluationRow]:
     measured = []
-    for name, labels, scores in metrics:
-        accuracy = float(np.mean((scores >= threshold) == labels))
-        measured.append((name, labels, accuracy, binary_auc(labels, scores)))
-    clean_accuracy, clean_auc = measured[0][2:]
+    for name, labels, scores, _image_ids in metrics:
+        predictions = (scores >= threshold).astype(np.int64)
+        true_positive = int(((labels == 1) & (predictions == 1)).sum())
+        true_negative = int(((labels == 0) & (predictions == 0)).sum())
+        false_positive = int(((labels == 0) & (predictions == 1)).sum())
+        false_negative = int(((labels == 1) & (predictions == 0)).sum())
+        accuracy = (true_positive + true_negative) / len(labels)
+        precision = true_positive / (true_positive + false_positive) if (
+            true_positive + false_positive
+        ) else 0.0
+        recall = true_positive / (true_positive + false_negative) if (
+            true_positive + false_negative
+        ) else 0.0
+        f1 = (
+            2 * precision * recall / (precision + recall)
+            if precision + recall
+            else 0.0
+        )
+        measured.append(
+            (
+                name,
+                labels,
+                true_positive,
+                true_negative,
+                false_positive,
+                false_negative,
+                accuracy,
+                precision,
+                recall,
+                f1,
+                binary_auc(labels, scores),
+            )
+        )
+    clean_accuracy, clean_auc = measured[0][6], measured[0][10]
     return [
         EvaluationRow(
             transform=name,
             samples=len(labels),
             real=int((labels == 0).sum()),
             synthetic=int((labels == 1).sum()),
+            true_positive=true_positive,
+            true_negative=true_negative,
+            false_positive=false_positive,
+            false_negative=false_negative,
             accuracy=accuracy,
+            precision=precision,
+            recall=recall,
+            f1=f1,
             auc=auc,
             accuracy_delta_vs_clean=accuracy - clean_accuracy,
             auc_delta_vs_clean=auc - clean_auc,
         )
-        for name, labels, accuracy, auc in measured
+        for (
+            name,
+            labels,
+            true_positive,
+            true_negative,
+            false_positive,
+            false_negative,
+            accuracy,
+            precision,
+            recall,
+            f1,
+            auc,
+        ) in measured
     ]
+
+
+def _image_ids(dataset: BranchViewDataset) -> tuple[str, ...]:
+    column = dataset.id_column
+    if column is not None and column in dataset.rows.column_names:
+        return tuple(str(value) for value in dataset.rows[column])
+    return tuple(f"index_{index:06d}" for index in range(len(dataset)))
+
+
+def _error_records(
+    metrics: list[tuple[str, np.ndarray, np.ndarray, tuple[str, ...]]],
+    threshold: float,
+):
+    for name, labels, scores, image_ids in metrics:
+        predictions = (scores >= threshold).astype(np.int64)
+        for image_id, label, score, prediction in zip(
+            image_ids, labels, scores, predictions
+        ):
+            if label == prediction:
+                continue
+            yield {
+                "transform": name,
+                "image_id": image_id,
+                "label": int(label),
+                "score": float(score),
+                "predicted_label": int(prediction),
+                "error_type": "false_positive" if prediction else "false_negative",
+            }
+
+
+def _write_errors(
+    metrics: list[tuple[str, np.ndarray, np.ndarray, tuple[str, ...]]],
+    threshold: float,
+    path: Path,
+) -> None:
+    fields = (
+        "transform",
+        "image_id",
+        "label",
+        "score",
+        "predicted_label",
+        "error_type",
+    )
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(_error_records(metrics, threshold))
+
+
+def _write_predictions(
+    metrics: list[tuple[str, np.ndarray, np.ndarray, tuple[str, ...]]],
+    threshold: float,
+    path: Path,
+) -> None:
+    with gzip.open(path, "wt", encoding="utf-8") as handle:
+        for name, labels, scores, image_ids in metrics:
+            predictions = (scores >= threshold).astype(np.int64)
+            for image_id, label, score, prediction in zip(
+                image_ids, labels, scores, predictions
+            ):
+                record = {
+                    "transform": name,
+                    "image_id": image_id,
+                    "label": int(label),
+                    "score": float(score),
+                    "predicted_label": int(prediction),
+                }
+                handle.write(json.dumps(record) + "\n")
 
 
 def _model_device(model: Any) -> torch.device:
@@ -250,12 +390,20 @@ def _write_csv(rows: list[EvaluationRow], path: Path) -> None:
 
 def _write_markdown(rows: list[EvaluationRow], path: Path) -> None:
     lines = [
-        "| Transform | Samples | Real | Synthetic | Accuracy | AUC | Δ Accuracy | Δ AUC |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        (
+            "| Transform | N | TP | TN | FP | FN | Accuracy | Precision | "
+            "Recall | F1 | AUC | Δ Accuracy | Δ AUC |"
+        ),
+        (
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
+            "---: | ---: | ---: | ---: | ---: |"
+        ),
     ]
     lines.extend(
-        f"| {row.transform} | {row.samples} | {row.real} | {row.synthetic} | "
-        f"{row.accuracy:.4f} | {row.auc:.4f} | "
+        f"| {row.transform} | {row.samples} | {row.true_positive} | "
+        f"{row.true_negative} | {row.false_positive} | {row.false_negative} | "
+        f"{row.accuracy:.4f} | {row.precision:.4f} | {row.recall:.4f} | "
+        f"{row.f1:.4f} | {row.auc:.4f} | "
         f"{row.accuracy_delta_vs_clean:+.4f} | {row.auc_delta_vs_clean:+.4f} |"
         for row in rows
     )

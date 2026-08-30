@@ -4,6 +4,8 @@ unused mask column."""
 
 import io
 import csv
+import gzip
+import json
 import shutil
 
 import numpy as np
@@ -222,6 +224,16 @@ def test_evaluator_runs_full_pipeline_and_writes_reports(sid_like_dir, tmp_path)
     assert len(report.rows) == len(EVAL_GRID) == 17
     assert [row.transform for row in report.rows] == list(EVAL_GRID)
     assert all(row.samples == len(loaders.test.dataset) for row in report.rows)
+    assert all(
+        (
+            row.true_positive
+            + row.true_negative
+            + row.false_positive
+            + row.false_negative
+            == row.samples
+        )
+        for row in report.rows
+    )
     assert all(np.isfinite([row.accuracy, row.auc]).all() for row in report.rows)
     assert model.seen == len(EVAL_GRID) * len(loaders.test.dataset)
 
@@ -230,6 +242,8 @@ def test_evaluator_runs_full_pipeline_and_writes_reports(sid_like_dir, tmp_path)
     assert [row["transform"] for row in csv_rows] == list(EVAL_GRID)
     markdown = report.markdown_path.read_text(encoding="utf-8")
     assert all(name in markdown for name in EVAL_GRID)
+    assert report.error_path.is_file()
+    assert report.predictions_path is None
 
 
 def test_evaluator_accuracy_matches_class_counts_for_a_constant_model(
@@ -256,6 +270,44 @@ def test_evaluator_accuracy_matches_class_counts_for_a_constant_model(
     ).rows[0]
     assert always_synthetic.accuracy == always_synthetic.synthetic / always_synthetic.samples
     assert always_real.accuracy == always_real.real / always_real.samples
+    assert always_synthetic.recall == 1.0
+    assert always_synthetic.precision == always_synthetic.synthetic / always_synthetic.samples
+    assert always_real.precision == always_real.recall == always_real.f1 == 0.0
+
+
+def test_evaluator_exports_error_only_and_optional_predictions(sid_like_dir, tmp_path):
+    class AlwaysSynthetic(torch.nn.Module):
+        def forward(self, dino, patch):
+            return torch.full((len(dino),), 0.9)
+
+    loaders = create_dataloaders(sid_like_dir, batch_size=4, test_fraction=0.5)
+    report = evaluate_model(
+        AlwaysSynthetic(),
+        loaders,
+        output_dir=tmp_path,
+        transforms={"clean": EVAL_GRID["clean"]},
+        save_predictions=True,
+    )
+    row = report.rows[0]
+    assert row.true_positive == row.synthetic
+    assert row.false_positive == row.real
+    assert row.true_negative == row.false_negative == 0
+    assert report.predictions_path is not None
+
+    with report.error_path.open(newline="", encoding="utf-8") as handle:
+        errors = list(csv.DictReader(handle))
+    assert len(errors) == row.false_positive
+    assert {error["error_type"] for error in errors} == {"false_positive"}
+    assert {error["image_id"] for error in errors} <= set(
+        loaders.test.dataset.rows["img_id"]
+    )
+
+    with gzip.open(report.predictions_path, "rt", encoding="utf-8") as handle:
+        predictions = [json.loads(line) for line in handle]
+    assert len(predictions) == row.samples
+    assert {prediction["image_id"] for prediction in predictions} == set(
+        loaders.test.dataset.rows["img_id"]
+    )
 
 
 def test_evaluator_requires_a_clean_cell(sid_like_dir, tmp_path):
