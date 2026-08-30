@@ -210,7 +210,7 @@ def test_evaluator_runs_full_pipeline_and_writes_reports(sid_like_dir, tmp_path)
     loaders = create_dataloaders(
         sid_like_dir,
         batch_size=2,
-        num_workers=0,
+        num_workers=1,
         seed=7,
         test_fraction=0.5,
     )

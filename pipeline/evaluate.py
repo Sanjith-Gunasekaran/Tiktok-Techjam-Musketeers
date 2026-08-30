@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import csv
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -33,6 +33,19 @@ class EvaluationReport(NamedTuple):
     rows: tuple[EvaluationRow, ...]
     csv_path: Path
     markdown_path: Path
+
+
+@dataclass(frozen=True)
+class CheckedTransform:
+    """Picklable adapter that validates each transform's output."""
+
+    transform: Callable[[Image.Image], Image.Image]
+
+    def __call__(self, image: Image.Image) -> Image.Image:
+        transformed = self.transform(image)
+        if not isinstance(transformed, Image.Image):
+            raise TypeError("Evaluation transforms must return PIL images")
+        return transformed
 
 
 def binary_auc(labels: Any, scores: Any) -> float:
@@ -154,7 +167,7 @@ def _evaluate_condition(
     dataset = BranchViewDataset(
         base_dataset.source,
         base_dataset.rows,
-        augmentation=_checked_transform(transform),
+        augmentation=CheckedTransform(transform),
         partition="test",
     )
     loader = DataLoader(
@@ -176,16 +189,6 @@ def _evaluate_condition(
     if not labels:
         raise ValueError("Frozen test set is empty")
     return np.concatenate(labels), np.concatenate(scores)
-
-
-def _checked_transform(transform: Any):
-    def apply(image: Image.Image) -> Image.Image:
-        transformed = transform(image)
-        if not isinstance(transformed, Image.Image):
-            raise TypeError("Evaluation transforms must return PIL images")
-        return transformed
-
-    return apply
 
 
 def _probabilities(output: Any, batch_size: int, from_logits: bool) -> np.ndarray:
