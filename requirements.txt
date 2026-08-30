@@ -1,4 +1,9 @@
 datasets
 kagglehub
 Pillow
+numpy
 pyarrow
+scikit-learn
+torch
+torchvision
+transformers

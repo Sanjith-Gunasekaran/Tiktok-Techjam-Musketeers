@@ -10,3 +10,7 @@ checkpoints/
 *.pth
 .cache/
 reports/
+batch_preview/
+predictions.json
+*_predictions.json
+*.metrics.json

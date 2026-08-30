@@ -102,6 +102,34 @@ class ImageDatasetLoader:
             raise ValueError("label_map requires a label column")
 
         self.label_names = self._get_label_names()
+        self._label_dataset = (
+            self.dataset.select_columns([self.label_column])
+            if isinstance(self.dataset, Dataset) and self.label_column is not None
+            else None
+        )
+
+    def __len__(self) -> int:
+        """Return the size of a random-access dataset for PyTorch adapters."""
+        if not isinstance(self.dataset, Dataset):
+            raise TypeError("Streamed datasets do not have a fixed length")
+        return len(self.dataset)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        """Return one normalized sample by index.
+
+        This makes a non-streaming loader directly compatible with
+        ``torch.utils.data.DataLoader`` without importing PyTorch here.
+        """
+        if not isinstance(self.dataset, Dataset):
+            raise TypeError("Indexed access is unavailable for streamed datasets")
+        return self._normalise_sample(self.dataset[index])
+
+    def get_label(self, index: int) -> Any:
+        """Return a mapped label without decoding the corresponding image."""
+        if self._label_dataset is None or self.label_column is None:
+            raise TypeError("Labels are unavailable for this dataset")
+        original_label = self._label_dataset[index][self.label_column]
+        return self._map_label(original_label, self._get_label_name(original_label))
 
     def get_batch(
         self, batch_size: int, *, seed: int | None = None

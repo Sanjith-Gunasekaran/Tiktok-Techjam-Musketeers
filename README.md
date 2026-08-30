@@ -179,3 +179,103 @@ augmentation.
   test split carved out for the robustness table
 - Evaluation harness (clean vs. transformed metrics)
 - Balanced training-subset download script
+
+## DINOv2 directory inference
+
+`predict_aigc.py` is compatible with `best_dinov2_model.pt` produced by
+`DINOv2_ML.ipynb`. It recursively scans an unlabeled image directory, processes
+images in batches, and writes the probability that each image is AI-generated:
+
+```bash
+python predict_aigc.py path/to/images \
+  --checkpoint path/to/best_dinov2_model.pt \
+  --output predictions.json \
+  --batch-size 16
+```
+
+The checkpoint must contain the notebook's full `model_state_dict`, `model_id`,
+and `class_to_idx`. On its first run, Transformers downloads the DINOv2 model
+configuration and image processor. Later runs use the local Hugging Face cache.
+
+The output contains one entry per supported image, with paths relative to the
+input directory and `pred` in the range `[0, 1]`:
+
+```json
+[
+  {
+    "image_path": "example.jpg",
+    "pred": 0.9721
+  },
+  {
+    "image_path": "nested/photo.png",
+    "pred": 0.0314
+  }
+]
+```
+
+Higher `pred` values indicate a greater likelihood of AI-generated content.
+Use `--device cpu` to force CPU inference or `--device cuda` to require a GPU.
+The default `--num-workers 0` is the safest choice on Windows.
+
+Before scoring a large directory, run a small deterministic smoke test:
+
+```bash
+python predict_aigc.py path/to/images \
+  --checkpoint path/to/best_dinov2_model.pt \
+  --output test_predictions.json \
+  --max-images 32 \
+  --seed 42
+```
+
+This samples 32 paths without changing the source directory. The command also
+prints the selected device, processing rate, and estimated time remaining.
+
+## DINOv2 training pipeline
+
+`DINOv2_ML.ipynb` does train a model. `train_dinov2.py` ports that notebook's
+augmentation, weighted loss, early stopping, checkpoint selection, and test
+evaluation into a reusable command. For a local ImageFolder dataset:
+
+```text
+archive/
+├── train/
+│   ├── REAL/
+│   └── FAKE/
+├── validation/       # optional
+│   ├── REAL/
+│   └── FAKE/
+└── test/             # optional
+    ├── REAL/
+    └── FAKE/
+```
+
+Run a one-epoch smoke test before full training:
+
+```bash
+python train_dinov2.py path/to/archive \
+  --output checkpoints/smoke_dinov2.pt \
+  --epochs 1 \
+  --max-train-images 128 \
+  --max-validation-images 64 \
+  --max-test-images 64 \
+  --device cpu
+```
+
+When `validation/` is absent, 10% of `train/` is held out deterministically.
+The smoke-test limits are stratified so both classes are represented. After it
+works, omit the three `--max-*-images` options for full training. A CUDA GPU is
+strongly recommended:
+
+```bash
+python train_dinov2.py path/to/archive \
+  --output checkpoints/best_dinov2_model.pt \
+  --epochs 10 \
+  --patience 3 \
+  --batch-size 16 \
+  --device cuda
+```
+
+Folder labels are normalized to `human=0` and `AI=1`; change `--human-class`
+and `--ai-class` if the folders use different names. The best checkpoint is
+directly compatible with `predict_aigc.py`. Training also creates a neighboring
+`best_dinov2_model.metrics.json` containing validation and test metrics.
