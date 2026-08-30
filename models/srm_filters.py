@@ -27,9 +27,9 @@ def _kernels() -> torch.Tensor:
             ],
             [
                 [0, 0, 0, 0, 0],
-                [0, 0, -1, 0, 0],
-                [0, -1, 4, -1, 0],
-                [0, 0, -1, 0, 0],
+                [0, 0, 0, 0, 0],
+                [0, 1, -2, 1, 0],
+                [0, 0, 0, 0, 0],
                 [0, 0, 0, 0, 0],
             ],
         ],
@@ -40,8 +40,9 @@ def _kernels() -> torch.Tensor:
 class SRMFilterBank(nn.Module):
     """Apply fixed high-pass filters to an RGB patch.
 
-    Each kernel is shared across RGB and averaged, yielding three residual
-    maps. Kernels are buffers, so optimizers never update them.
+    Input is model-normalized RGB data. Each kernel is shared across RGB,
+    yielding three residual maps. Kernels are buffers, so optimizers never
+    update them.
     """
 
     def __init__(self) -> None:
@@ -49,12 +50,14 @@ class SRMFilterBank(nn.Module):
         self.register_buffer("kernels", _kernels(), persistent=True)
 
     def forward(self, patches: torch.Tensor) -> torch.Tensor:
-        """Return three residual maps with the input spatial dimensions."""
+        """Return clipped valid-convolution residual maps."""
         if patches.ndim != 4 or patches.shape[1] != 3:
             raise ValueError("Expected patches shaped (B, 3, H, W)")
         if not torch.is_floating_point(patches):
             raise TypeError("SRM patches must be floating-point tensors")
+        kernel_size = self.kernels.shape[-1]
+        if patches.shape[-2] < kernel_size or patches.shape[-1] < kernel_size:
+            raise ValueError(f"SRM patches must be at least {kernel_size}x{kernel_size}")
 
-        # Averaging channel responses prevents a colour channel dominating noise.
-        kernels = self.kernels.to(dtype=patches.dtype).repeat(1, 3, 1, 1) / 3
-        return F.conv2d(patches, kernels, padding=2)
+        kernels = self.kernels.to(dtype=patches.dtype).repeat(1, 3, 1, 1)
+        return F.hardtanh(F.conv2d(patches, kernels), min_val=-3.0, max_val=3.0)

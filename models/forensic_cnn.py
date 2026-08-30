@@ -24,9 +24,9 @@ def _conv_block(in_channels: int, out_channels: int) -> nn.Sequential:
 class ForensicCNN(nn.Module):
     """Classify raw 32x32 simplest patches using fixed SRM residuals.
 
-    The output is one uncalibrated synthetic-class logit per patch. Train it
-    with ``BCEWithLogitsLoss``; apply ``sigmoid`` only when probabilities are
-    needed.
+    Inputs are the pipeline's float pixels in ``[0, 255]``. They are scaled
+    and ImageNet-normalized before SRM filtering, matching SSP preprocessing.
+    The output is one uncalibrated synthetic-class logit per patch.
     """
 
     patch_size = 32
@@ -36,8 +36,9 @@ class ForensicCNN(nn.Module):
         if not 0.0 <= dropout < 1.0:
             raise ValueError("dropout must be in [0, 1)")
         self.srm = SRMFilterBank()
+        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
         self.features = nn.Sequential(
-            nn.BatchNorm2d(3),
             _conv_block(3, 32),
             _conv_block(32, 64),
             _conv_block(64, 128),
@@ -51,6 +52,13 @@ class ForensicCNN(nn.Module):
 
     def forward(self, patches: torch.Tensor) -> torch.Tensor:
         """Return synthetic-class logits shaped ``(B,)``."""
-        if patches.ndim != 4 or tuple(patches.shape[1:]) != (3, 32, 32):
-            raise ValueError("Expected patches shaped (B, 3, 32, 32)")
+        expected_shape = (3, self.patch_size, self.patch_size)
+        if patches.ndim != 4 or tuple(patches.shape[1:]) != expected_shape:
+            raise ValueError(f"Expected patches shaped (B, {', '.join(map(str, expected_shape))})")
+        if not torch.is_floating_point(patches):
+            raise TypeError("Forensic patches must be floating-point tensors")
+        patches = patches / 255.0
+        patches = (patches - self.mean.to(dtype=patches.dtype)) / self.std.to(
+            dtype=patches.dtype
+        )
         return self.classifier(self.features(self.srm(patches))).squeeze(1)
