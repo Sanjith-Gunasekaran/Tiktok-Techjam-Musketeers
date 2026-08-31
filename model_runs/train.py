@@ -460,6 +460,7 @@ def main() -> None:
         start_epoch = checkpoint["epoch"] + 1
         best_auc = checkpoint.get("best_auc", checkpoint["metrics"].get("auc", float("-inf")))
     checkpoint_dir = args.output_dir / args.stage
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     history = checkpoint_dir / "history.jsonl"
     if start_epoch > args.epochs:
         print(f"Checkpoint is already at epoch {start_epoch - 1}; --epochs is {args.epochs}.")
