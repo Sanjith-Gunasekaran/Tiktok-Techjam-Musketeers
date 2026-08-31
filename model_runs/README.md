@@ -86,54 +86,6 @@ python -m model_runs.calibrate_fusion --data-dir saberzl/SID_Set \
 It searches fixed DINO weights on validation AUC, calibrates the probability
 threshold on the separate calibration partition, and writes `fusion/fixed.json`.
 
-## External benchmark
-
-After fusion is fixed, evaluate a separately sourced image benchmark without
-retraining or recalibrating anything:
-
-```bash
-python -m model_runs.evaluate_external \
-  --input-dir /path/to/benchmark \
-  --fusion-config /path/to/run/fusion.json \
-  --dino-checkpoint /path/to/run/dino_finetune/best.pt \
-  --forensic-checkpoint /path/to/run/forensic/best.pt \
-  --output-dir /path/to/run/external_report
-```
-
-The directory form scans recursively. Standard class directories including
-`real`, `authentic`, `fake`, `synthetic`, and `ai_generated` are mapped to
-binary labels; unrecognised directories remain unlabelled and still receive
-predictions. Use `--no-infer-labels` for a deliberately unlabelled benchmark.
-
-For benchmarks distributed with metadata, pass a CSV manifest instead:
-
-```csv
-image_id,path,label
-sample_001,images/sample_001.png,real
-sample_002,images/sample_002.jpg,synthetic
-```
-
-```bash
-python -m model_runs.evaluate_external \
-  --manifest /path/to/benchmark.csv \
-  --image-root /path/to/benchmark_root \
-  --fusion-config /path/to/run/fusion.json \
-  --dino-checkpoint /path/to/run/dino_finetune/best.pt \
-  --forensic-checkpoint /path/to/run/forensic/best.pt \
-  --output-dir /path/to/run/external_report
-```
-
-The submission artifact is `predictions.json`, a JSON list containing exactly
-`image_path` (relative to the input directory) and `pred` (the synthetic-class
-probability) for every image. Use `--output-json /desired/file.json` to write it
-elsewhere. The report directory also contains `predictions.csv`, `errors.csv`,
-`summary.json`, `summary.md`, and `run_metadata.json`. Metrics use only rows
-with supplied labels. External images receive the same deterministic JPEG
-canonicalization and branch preprocessing used during training, but no random
-or robustness augmentation. A moved run often leaves old Colab paths inside
-`fusion.json`; the two explicit checkpoint arguments above safely override
-those paths.
-
 Resume an interrupted run with the same stage and settings:
 
 ```bash
