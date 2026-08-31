@@ -71,6 +71,28 @@ model for clean and every fixed transform, and writes:
 - `error_analysis.csv`: false positives and false negatives only.
 - `predictions.jsonl.gz`: every prediction, only when `save_predictions=True`.
 
+Aggregate the per-condition AUC values into a compact JSON summary:
+
+```python
+from pipeline import write_overall_summary
+
+write_overall_summary(
+    report.rows,
+    "reports/overall_summary.json",
+    exclude_transforms={"chain_crop_resize_jpeg"},
+)
+```
+
+This reports clean AUC, mean transformed AUC and an equally weighted combined
+score:
+
+```text
+combined AUC = 0.5 × clean AUC + 0.5 × robust AUC
+```
+
+The optional realistic degradation chain is excluded above so it remains a
+separate stress test rather than changing the required transform-grid mean.
+
 Choose the checkpoint and threshold on validation first. The test report is a
 single final measurement, not cross-validation.
 
