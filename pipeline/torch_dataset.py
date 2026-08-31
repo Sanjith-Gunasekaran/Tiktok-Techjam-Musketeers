@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, NamedTuple, TypedDict
@@ -18,8 +19,16 @@ from data_loader.image_dataset_loader import (
 )
 
 from .augmentations import RandomAugment
+from .canonicalize import canonicalize_encoding
 from .preprocess import two_views
-from .splits import CALIBRATION_FRACTION, TEST_FRACTION, split_calibration_dataset, split_dataset
+from .splits import (
+    CALIBRATION_FRACTION,
+    TEST_FRACTION,
+    exclude_heldout_families,
+    family_id,
+    split_calibration_dataset,
+    split_dataset,
+)
 
 View = Literal["dino", "forensic", "both"]
 BranchSample = tuple[torch.Tensor, torch.Tensor, int, int]
@@ -33,12 +42,13 @@ class SingleViewSample(TypedDict):
 
 
 class BranchViewDataset(Dataset[BranchSample]):
-    """Decode one row, augment once, then create requested branch views."""
+    """Decode, canonicalize, augment once, then create requested branch views."""
 
     def __init__(
         self,
         source: ImageDatasetLoader,
         rows: HFDataset | None = None,
+        canonicalizer: Callable[[Image.Image], Image.Image] = canonicalize_encoding,
         augmentation: Callable[[Image.Image], Image.Image] | None = None,
         partition: str | None = None,
         id_column: str | None = None,
@@ -51,6 +61,9 @@ class BranchViewDataset(Dataset[BranchSample]):
             raise TypeError("BranchViewDataset requires streaming=False")
         self.source = source
         self.rows = selected_rows
+        if not callable(canonicalizer):
+            raise TypeError("canonicalizer must be callable")
+        self.canonicalizer = canonicalizer
         self.augmentation = augmentation
         self.partition = partition
         self.id_column = id_column
@@ -63,7 +76,9 @@ class BranchViewDataset(Dataset[BranchSample]):
 
     def __getitem__(self, index: int) -> BranchSample | SingleViewSample:
         sample = self.source.normalise_sample(self.rows[index])
-        image = sample["image"]
+        image = self.canonicalizer(sample["image"])
+        if not isinstance(image, Image.Image):
+            raise TypeError("canonicalizer must return a PIL image")
         if self.augmentation is not None:
             image = self.augmentation(image)
         if not isinstance(image, Image.Image):
@@ -166,8 +181,37 @@ def create_dataloaders(
     validation_source = ImageDatasetLoader(
         source, split=validation_split, **common
     )
-    if id_column not in validation_source.dataset.column_names:
-        raise ValueError(f"Validation split has no {id_column!r} column")
+    for partition, dataset in (
+        ("training", train_source.dataset),
+        ("validation", validation_source.dataset),
+    ):
+        if id_column not in dataset.column_names:
+            raise ValueError(f"{partition.title()} split has no {id_column!r} column")
+
+    heldout_families = frozenset(
+        family_id(image_id) for image_id in validation_source.dataset[id_column]
+    )
+    train_rows = exclude_heldout_families(
+        train_source.dataset,
+        heldout_families,
+        id_column=id_column,
+    )
+    removed_overlap_count = len(train_source.dataset) - len(train_rows)
+    if removed_overlap_count:
+        warnings.warn(
+            f"Removed {removed_overlap_count} training row(s) whose ID family "
+            "occurs in published validation.",
+            UserWarning,
+            stacklevel=2,
+        )
+    remaining_train_families = {
+        family_id(image_id) for image_id in train_rows[id_column]
+    }
+    leaked_families = remaining_train_families & heldout_families
+    if leaked_families:
+        raise RuntimeError(
+            f"Training still overlaps held-out data in {len(leaked_families)} families"
+        )
 
     development_rows, test_rows = split_dataset(
         validation_source.dataset,
@@ -179,8 +223,21 @@ def create_dataloaders(
         id_column=id_column,
         fraction=calibration_fraction,
     )
-    if not len(train_source.dataset):
-        raise ValueError("Training split is empty after label filtering")
+    partition_families = {
+        "validation": {family_id(item) for item in validation_rows[id_column]},
+        "calibration": {family_id(item) for item in calibration_rows[id_column]},
+        "test": {family_id(item) for item in test_rows[id_column]},
+    }
+    partition_names = tuple(partition_families)
+    for index, left in enumerate(partition_names):
+        for right in partition_names[index + 1 :]:
+            overlap = partition_families[left] & partition_families[right]
+            if overlap:
+                raise RuntimeError(
+                    f"{left.title()} and {right} overlap in {len(overlap)} families"
+                )
+    if not len(train_rows):
+        raise ValueError("Training split is empty after label and overlap filtering")
     if not len(validation_rows) or not len(calibration_rows) or not len(test_rows):
         raise ValueError("Validation, calibration, or test split is empty; use more data")
 
@@ -191,6 +248,7 @@ def create_dataloaders(
     )
     train_dataset = BranchViewDataset(
         train_source,
+        train_rows,
         augmentation=augmentation,
         partition="train",
         id_column=id_column,

@@ -188,6 +188,7 @@ def _evaluate_condition(
     dataset = BranchViewDataset(
         base_dataset.source,
         base_dataset.rows,
+        canonicalizer=base_dataset.canonicalizer,
         augmentation=CheckedTransform(transform),
         partition="test",
         id_column=base_dataset.id_column,

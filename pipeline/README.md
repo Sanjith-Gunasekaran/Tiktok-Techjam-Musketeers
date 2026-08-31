@@ -6,6 +6,7 @@ model sees the same preprocessing in both places.
 
 ```text
 raw image
+  -> common JPEG canonicalization (all labels and partitions)
   -> augmentation (training only)
   -> DINO view + simplest-patch view
   -> model
@@ -17,6 +18,7 @@ raw image
 | File | Role |
 | --- | --- |
 | `augmentations.py` | Random real-world degradation for training and the fixed clean/transform grid for evaluation. |
+| `canonicalize.py` | Applies one common, label-independent JPEG pass before any augmentation or branch view. |
 | `preprocess.py` | Makes the normalized 224×224 DINO tensor and raw 32×32 lowest-texture patch from the same image. |
 | `splits.py` | Deterministically divides the published validation split into validation and one frozen internal test set. Related image families stay together. |
 | `torch_dataset.py` | PyTorch `Dataset`/`DataLoader` factory: load, filter, augment, preprocess, batch, and shuffle training data. |
@@ -36,12 +38,17 @@ for dino, patch, label, original_label in loaders.train:
 Single-branch training can pass `view="dino"` or `view="forensic"` to avoid
 building the unused input. The default `view="both"` is for fusion/evaluation.
 
-- Training: published train split; shuffled and randomly augmented each epoch.
+- Training: published train split after removing every family present in the
+  complete published validation split; shuffled and randomly augmented.
 - Validation: fixed family-disjoint subset for checkpoint and threshold selection.
 - Calibration: fixed family-disjoint subset used only to fit fusion scores.
 - Test: fixed holdout from the published validation split; no augmentation or
   shuffle. Do not use `loaders.test` while choosing models or thresholds.
 - Tampered rows are discarded. Labels are `0` real and `1` fully synthetic.
+- All partitions receive the same quality-75 JPEG canonicalization before
+  augmentation/preprocessing. This reduces the original JPEG-vs-PNG artifact
+  shortcut, but cannot restore detail already lost in source JPEGs;
+  externally sourced, encoding-matched evaluation remains mandatory.
 
 `num_workers` is the number of PyTorch helper **processes** that load and
 preprocess batches ahead of the training process. It changes speed, not data

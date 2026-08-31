@@ -4,7 +4,7 @@ from collections import Counter
 
 import pytest
 
-from pipeline import family_id, is_internal_test, split_dataset
+from pipeline import exclude_heldout_families, family_id, is_internal_test, split_dataset
 from pipeline.splits import TEST_FRACTION
 
 IDS = [f"img_{i}" for i in range(20000)]
@@ -72,6 +72,17 @@ def test_split_dataset_keeps_families_together():
     test_stems = Counter(family_id(i) for i in test["img_id"])
     # every family present in test must contribute BOTH of its images
     assert set(test_stems.values()) == {2}, sorted(test_stems.values())[:5]
+
+
+def test_exclude_heldout_families_removes_prefixed_relatives():
+    datasets = pytest.importorskip("datasets")
+    source = datasets.Dataset.from_dict(
+        {"img_id": ["real_a", "full_synthetic_a", "real_b"], "label": [0, 1, 0]}
+    )
+
+    filtered = exclude_heldout_families(source, {"a"})
+
+    assert filtered["img_id"] == ["real_b"]
 
 
 def test_invalid_fraction_rejected():

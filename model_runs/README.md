@@ -124,6 +124,10 @@ a bounded smoke run raises a one-class validation error, increase
 ## Before the expensive run
 
 Use a GPU machine with enough disk/cache space for the dataset and DINO model.
+Dataset construction removes every training family found in published
+validation and applies the same quality-75 JPEG canonicalization to all
+partitions before augmentation. These preprocessing changes invalidate older
+checkpoints; start every branch in a new output directory after updating.
 Confirm all four smoke commands complete and that each checkpoint can be used
 by the following stage. After all choices are frozen, run
 `pipeline.evaluate_model(..., from_logits=True)` once on the internal test set.

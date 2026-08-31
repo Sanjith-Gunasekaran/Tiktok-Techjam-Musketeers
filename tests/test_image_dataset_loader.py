@@ -166,6 +166,31 @@ def test_branch_views_share_one_augmented_image(sid_like_dir):
     assert all(torch.equal(left, right) for left, right in zip(actual, expected))
 
 
+def test_branch_view_canonicalizes_before_augmentation(sid_like_dir):
+    events = []
+
+    def canonicalizer(image):
+        events.append("canonicalize")
+        return Image.new("RGB", image.size, (20, 20, 20))
+
+    def augmentation(image):
+        events.append("augment")
+        assert np.asarray(image).mean() == 20
+        return Image.new("RGB", image.size, (40, 40, 40))
+
+    source = _loader(sid_like_dir)
+    dataset = BranchViewDataset(
+        source,
+        canonicalizer=canonicalizer,
+        augmentation=augmentation,
+    )
+    actual = dataset[0][:2]
+    expected = two_views(Image.new("RGB", (48, 48), (40, 40, 40)))
+
+    assert events == ["canonicalize", "augment"]
+    assert all(torch.equal(left, right) for left, right in zip(actual, expected))
+
+
 def test_single_view_dataset_avoids_the_other_branch(sid_like_dir):
     source = _loader(sid_like_dir)
 
@@ -211,6 +236,30 @@ def test_dataloader_factory_builds_fixed_binary_splits(sid_like_dir):
     assert patch.shape == (4, 3, 32, 32)
     assert set(label.tolist()) <= {0, 1}
     assert set(original_label.tolist()) <= {0, 1}
+
+
+def test_dataloader_removes_exact_and_family_overlap_from_training(sid_like_dir):
+    train_path = sid_like_dir / "data" / "train-00000-of-00001.parquet"
+    train = Dataset.from_parquet(str(train_path))
+    image_ids = list(train["img_id"])
+    image_ids[0] = "id_0"       # exact validation ID, included label 1
+    image_ids[2] = "real_id_1"  # family of validation ID id_1, included label 0
+    train = train.remove_columns("img_id").add_column("img_id", image_ids)
+    train_path.unlink()
+    train.to_parquet(train_path)
+
+    with pytest.warns(UserWarning, match=r"Removed 2 training row\(s\)"):
+        loaders = create_dataloaders(sid_like_dir, batch_size=2)
+    heldout_ids = set(loaders.validation.dataset.rows["img_id"])
+    heldout_ids.update(loaders.calibration.dataset.rows["img_id"])
+    heldout_ids.update(loaders.test.dataset.rows["img_id"])
+    retained_ids = set(loaders.train.dataset.rows["img_id"])
+
+    assert len(loaders.train.dataset) == 6
+    assert retained_ids.isdisjoint(heldout_ids)
+    assert {family_id(item) for item in retained_ids}.isdisjoint(
+        {family_id(item) for item in heldout_ids}
+    )
 
 
 def test_binary_auc_handles_order_and_ties():

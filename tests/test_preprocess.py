@@ -1,10 +1,11 @@
 """Tests for pipeline/preprocess.py."""
 
 import numpy as np
+import pytest
 import torch
 from PIL import Image
 
-from pipeline import RandomAugment, dino_view, simplest_patch, two_views
+from pipeline import RandomAugment, canonicalize_encoding, dino_view, simplest_patch, two_views
 from pipeline.preprocess import IMAGENET_MEAN, IMAGENET_STD, STANDARD_SIZE
 
 
@@ -13,6 +14,25 @@ def test_dino_view_shape_dtype_and_exact_normalization():
     assert tensor.shape == (3, 224, 224) and tensor.dtype == torch.float32
     expected = (128 / 255 - IMAGENET_MEAN) / IMAGENET_STD
     assert np.allclose(tensor.numpy()[:, 0, 0], expected, atol=1e-5)
+
+
+def test_encoding_canonicalization_is_deterministic_and_lossy():
+    values = np.arange(64, dtype=np.uint8)
+    array = np.stack(np.meshgrid(values, values, indexing="ij"), axis=-1)
+    array = np.concatenate((array, array[..., :1] * 3), axis=-1)
+    image = Image.fromarray(array)
+
+    first = canonicalize_encoding(image)
+    second = canonicalize_encoding(image)
+
+    assert first.mode == "RGB" and first.size == image.size
+    assert np.array_equal(np.asarray(first), np.asarray(second))
+    assert not np.array_equal(np.asarray(first), np.asarray(image))
+
+
+def test_encoding_canonicalization_rejects_invalid_quality():
+    with pytest.raises(ValueError, match="quality"):
+        canonicalize_encoding(Image.new("RGB", (8, 8)), quality=0)
 
 
 def test_dino_view_preserves_aspect_ratio_no_stretching():

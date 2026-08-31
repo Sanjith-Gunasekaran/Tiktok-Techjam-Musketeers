@@ -17,6 +17,10 @@ after ESSP) — trained with the challenge's transformations as augmentation.
 - Primary dataset: [SID-Set](https://huggingface.co/datasets/saberzl/SID_Set).
   The WildFake DALL·E-Advanced subset and COCO val2017 are the organizers'
   demo benchmark — never used in training.
+- SID-Set's real/JPEG and synthetic/PNG source convention is mitigated with a
+  common JPEG canonicalization pass, and published-validation families are
+  removed from training. Source compression history can still leave residual
+  bias, so final claims require the external encoding-matched benchmark.
 
 ## Repository layout
 

@@ -94,9 +94,34 @@ def split_calibration_dataset(
     return selection, calibration
 
 
+def exclude_heldout_families(
+    dataset,
+    heldout_families: frozenset[str] | set[str],
+    id_column: str = "img_id",
+):
+    """Remove training rows whose ID family occurs in any held-out partition.
+
+    Uses only the ID column, so filtering does not decode the large image and
+    mask payloads.  The held-out set should be made from the complete published
+    validation split before it is divided into validation/calibration/test.
+    """
+    families = frozenset(map(str, heldout_families))
+    return dataset.filter(
+        _family_is_not_heldout,
+        input_columns=id_column,
+        fn_kwargs={"heldout_families": families},
+    )
+
+
 def _is_internal_dev(image_id: str, fraction: float) -> bool:
     return not is_internal_test(image_id, fraction)
 
 
 def _is_selection(image_id: str, fraction: float) -> bool:
     return not is_fusion_calibration(image_id, fraction)
+
+
+def _family_is_not_heldout(
+    image_id: str, heldout_families: frozenset[str]
+) -> bool:
+    return family_id(image_id) not in heldout_families
