@@ -390,6 +390,7 @@ def write_report(
     predictions: list[dict[str, Any]],
     summary: dict[str, Any],
     metadata: dict[str, Any],
+    predictions_json: Path | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     fields = (
@@ -410,6 +411,22 @@ def write_report(
         writer = csv.DictWriter(output, fieldnames=fields)
         writer.writeheader()
         writer.writerows(row for row in predictions if row["correct"] is False)
+    submission_path = (
+        output_dir / "predictions.json" if predictions_json is None else predictions_json
+    )
+    submission_path.parent.mkdir(parents=True, exist_ok=True)
+    submission = [
+        {
+            # Directory discovery stores the path relative to --input-dir in
+            # image_id, keeping the submission portable across machines.
+            "image_path": row["image_id"],
+            "pred": row["synthetic_probability"],
+        }
+        for row in predictions
+    ]
+    submission_path.write_text(
+        json.dumps(submission, indent=2, allow_nan=False) + "\n", encoding="utf-8"
+    )
     (output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, allow_nan=False) + "\n", encoding="utf-8"
     )
@@ -462,6 +479,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dino-checkpoint", type=Path)
     parser.add_argument("--forensic-checkpoint", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--output-json",
+        type=Path,
+        help="Submission JSON path (default: OUTPUT_DIR/predictions.json)",
+    )
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--no-amp", action="store_true")
@@ -518,11 +540,18 @@ def main() -> None:
         "canonical_jpeg": True,
         "augmentations": False,
     }
-    write_report(args.output_dir, predictions, summary, metadata)
+    write_report(
+        args.output_dir,
+        predictions,
+        summary,
+        metadata,
+        predictions_json=args.output_json,
+    )
+    predictions_json = args.output_json or args.output_dir / "predictions.json"
     print(
         f"evaluated {summary['samples']} image(s) on {device} | "
         f"accuracy {summary.get('accuracy', 'n/a')} | auc {summary.get('auc', 'n/a')} | "
-        f"report {args.output_dir / 'summary.md'}"
+        f"predictions {predictions_json}"
     )
 
 

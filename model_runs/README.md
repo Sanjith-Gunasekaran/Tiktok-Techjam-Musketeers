@@ -123,12 +123,16 @@ python -m model_runs.evaluate_external \
   --output-dir /path/to/run/external_report
 ```
 
-The report directory contains `predictions.csv`, `errors.csv`, `summary.json`,
-`summary.md`, and `run_metadata.json`. Metrics use only rows with supplied
-labels. External images receive the same deterministic JPEG canonicalization
-and branch preprocessing used during training, but no random or robustness
-augmentation. A moved run often leaves old Colab paths inside `fusion.json`;
-the two explicit checkpoint arguments above safely override those paths.
+The submission artifact is `predictions.json`, a JSON list containing exactly
+`image_path` (relative to the input directory) and `pred` (the synthetic-class
+probability) for every image. Use `--output-json /desired/file.json` to write it
+elsewhere. The report directory also contains `predictions.csv`, `errors.csv`,
+`summary.json`, `summary.md`, and `run_metadata.json`. Metrics use only rows
+with supplied labels. External images receive the same deterministic JPEG
+canonicalization and branch preprocessing used during training, but no random
+or robustness augmentation. A moved run often leaves old Colab paths inside
+`fusion.json`; the two explicit checkpoint arguments above safely override
+those paths.
 
 Resume an interrupted run with the same stage and settings:
 

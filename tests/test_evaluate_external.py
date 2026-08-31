@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 
 import pytest
 import torch
@@ -161,5 +162,12 @@ def test_summary_and_reports_use_only_supplied_labels(tmp_path) -> None:
     assert summary["accuracy"] == 1.0
     assert summary["auc"] == 1.0
     assert (tmp_path / "predictions.csv").is_file()
+    submission = json.loads((tmp_path / "predictions.json").read_text(encoding="utf-8"))
+    assert submission == [
+        {"image_path": "r", "pred": 0.1},
+        {"image_path": "f", "pred": 0.9},
+        {"image_path": "u", "pred": 0.8},
+    ]
+    assert all(set(row) == {"image_path", "pred"} for row in submission)
     assert (tmp_path / "errors.csv").read_text(encoding="utf-8").count("\n") == 1
     assert (tmp_path / "summary.md").is_file()
