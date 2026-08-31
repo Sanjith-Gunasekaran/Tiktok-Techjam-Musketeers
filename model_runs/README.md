@@ -33,7 +33,8 @@ model_runs/checkpoints/<stage>/
 ```
 
 `best.pt` is selected by validation AUC. `last.pt` supports resuming and
-retains the best AUC observed so far.
+retains the optimizer, scheduler, scaler, and RNG states. Each epoch also
+appends metrics and learning rates to `history.jsonl`.
 
 ## Recommended commands
 
@@ -67,6 +68,12 @@ python -m model_runs.train --stage fusion --data-dir saberzl/SID_Set \
   --forensic-checkpoint model_runs/checkpoints/forensic/best.pt --epochs 5
 ```
 
+Fusion is not trained on `loaders.train`: it runs the frozen branches once on
+the development-validation loader, caches their logits, and makes a seeded,
+class-stratified calibration/selection split. The learned layer fits the first
+half and `best.pt` is selected on the other half. Neither operation touches the
+frozen test loader.
+
 Resume an interrupted run with the same stage and settings:
 
 ```bash
@@ -83,11 +90,17 @@ there is nothing left to train.
   second transform). Use `--no-augment` only for a clean baseline.
 - Start with the default learning rates: head `1e-4`, DINO blocks `1e-5`,
   forensic `1e-3`, fusion `1e-3`. Change one setting at a time.
+- CUDA runs use mixed precision, gradient clipping (`1.0`), one warmup epoch,
+  then cosine decay to 10% of the starting rate. Use `--no-amp`,
+  `--no-scheduler`, `--grad-clip-norm`, `--warmup-epochs`, or
+  `--min-lr-scale` only for a deliberate comparison.
 - Use `--unfreeze-blocks 1` or `2` for DINO fine-tuning. Do not fully unfreeze
   DINO as the first experiment.
 - `--srm-clip-value 3.0` is the baseline. Measure clipping before changing it.
 - Lower `--batch-size` if GPU memory is exhausted; increase `--num-workers`
   only after confirming CPU loading is the bottleneck.
+- Keep checkpoint architecture settings consistent. The trainer rejects a
+  wrong stage and rejects branch checkpoints with incompatible DINO/SRM setup.
 - Do not choose a model, fusion rule, or threshold from `loaders.test`.
 
 The trainer currently requires both classes in validation to calculate AUC. If
