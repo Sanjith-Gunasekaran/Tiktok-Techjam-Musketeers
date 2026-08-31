@@ -44,6 +44,34 @@ python -m pytest tests/
 Covers loading, label exclusion, augmentation, branch views, fixed splits,
 the DataLoader factory, and end-to-end transform-grid evaluation.
 
+## Inference
+
+Run the final fusion checkpoint on every supported image in a directory.
+Subdirectories are searched recursively.
+
+```bash
+python predict.py path/to/images \
+  --checkpoint model_runs/checkpoints/fusion/best.pt \
+  --output predictions.json \
+  --batch-size 16 \
+  --device auto
+```
+
+The output is a JSON array with one AI-confidence score per image:
+
+```json
+[
+  {
+    "image_path": "path/to/images/example.jpg",
+    "pred": 0.8734
+  }
+]
+```
+
+`pred` is the probability of class `1` (fully synthetic), from `0.0` to
+`1.0`. The script supports JPEG, PNG, WebP, BMP, and TIFF images. It uses
+CUDA when available, then Apple MPS, and otherwise CPU.
+
 ## Roadmap
 
 - [x] Dataset loader (local Parquet / HF / Kaggle) with team label convention
@@ -54,7 +82,7 @@ the DataLoader factory, and end-to-end transform-grid evaluation.
 - [x] PyTorch Dataset wrapper + DataLoader factory
 - [x] Evaluation harness (clean vs. transformed CSV/Markdown table)
 - [x] DINOv2 head, SRM forensics branch, score fusion
-- [ ] Inference script (image dir → JSON of `image_path`, `pred`)
+- [x] Inference script (image dir → JSON of `image_path`, `pred`)
 
 This root README will become the final consolidated project documentation
 (overview, setup, reproduction steps, limitations) before submission.
