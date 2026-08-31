@@ -7,7 +7,8 @@ import json
 import math
 import random
 import sys
-from collections.abc import Iterable
+import time
+from collections.abc import Iterable, Mapping
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -21,8 +22,9 @@ if __package__ in {None, ""}:
 
 from models import DINOClassifier, ForensicCNN, TwoBranchDetector
 from pipeline import binary_auc, create_dataloaders
+from pipeline.splits import family_id
 
-Batch = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+Batch = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | Mapping[str, torch.Tensor]
 Metrics = dict[str, float | None]
 STAGES = ("dino_head", "dino_finetune", "forensic", "fusion")
 
@@ -54,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--second-augmentation-probability", type=float, default=0.3)
     parser.add_argument("--no-augment", action="store_true")
     parser.add_argument("--srm-clip-value", type=float, default=3.0)
-    parser.add_argument("--fusion-mode", choices=("fixed", "learned"), default="learned")
+    parser.add_argument("--fusion-mode", choices=("learned",), default="learned")
     parser.add_argument("--dino-weight", type=float, default=0.5)
     parser.add_argument("--fusion-calibration-fraction", type=float, default=0.5)
     parser.add_argument("--max-train-batches", type=int)
@@ -94,6 +96,18 @@ def forward_stage(
     if dino is None or patch is None:
         raise ValueError("Fusion stage requires both inputs")
     return model(dino, patch)
+
+
+def unpack_batch(batch: Batch) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor]:
+    """Accept the legacy two-view tuple and single-view dictionary batches."""
+    if isinstance(batch, Mapping):
+        label = batch.get("label")
+        dino, patch = batch.get("dino"), batch.get("patch")
+        if not isinstance(label, torch.Tensor):
+            raise TypeError("Dictionary batch requires a tensor label")
+        return dino, patch, label
+    dino, patch, label, _ = batch
+    return dino, patch, label
 
 
 def _metrics(losses: list[float], labels: list[float], logits: list[float]) -> Metrics:
@@ -148,12 +162,13 @@ def run_epoch(
     labels_all: list[float] = []
     logits_all: list[float] = []
     with torch.set_grad_enabled(training):
-        for batch_index, (dino, patch, labels, _) in enumerate(batches):
+        for batch_index, batch in enumerate(batches):
             if max_batches is not None and batch_index >= max_batches:
                 break
+            dino, patch, labels = unpack_batch(batch)
             labels = labels.to(device, torch.float32, non_blocking=True)
-            dino = dino.to(device, non_blocking=True) if stage != "forensic" else None
-            patch = patch.to(device, non_blocking=True) if not stage.startswith("dino") else None
+            dino = dino.to(device, non_blocking=True) if dino is not None else None
+            patch = patch.to(device, non_blocking=True) if patch is not None else None
             if training:
                 optimizer.zero_grad(set_to_none=True)
             with _autocast(device, amp):
@@ -175,41 +190,76 @@ def cache_fusion_logits(
     max_batches: int | None,
     *,
     amp: bool,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, tuple[str, ...]]:
     """Run frozen branches once over validation and keep their two logits."""
     model.eval()
     scores, labels_all = [], []
-    for batch_index, (dino, patch, labels, _) in enumerate(batches):
+    image_ids = _batch_image_ids(batches)
+    used = 0
+    for batch_index, batch in enumerate(batches):
         if max_batches is not None and batch_index >= max_batches:
             break
+        dino, patch, labels = unpack_batch(batch)
+        if dino is None or patch is None:
+            raise ValueError("Fusion calibration requires both branch views")
         with _autocast(device, amp):
             dino_logits, forensic_logits = model.branch_logits(
                 dino.to(device, non_blocking=True), patch.to(device, non_blocking=True)
             )
         scores.append(torch.stack((dino_logits.float().cpu(), forensic_logits.float().cpu()), dim=1))
         labels_all.append(labels.to(torch.float32).cpu())
+        used += len(labels)
     if not scores:
         raise ValueError("Cannot fit fusion with an empty validation DataLoader")
-    return torch.cat(scores), torch.cat(labels_all)
+    return torch.cat(scores), torch.cat(labels_all), image_ids[:used]
+
+
+def _batch_image_ids(batches: Iterable[Batch]) -> tuple[str, ...]:
+    dataset = getattr(batches, "dataset", None)
+    rows, id_column = getattr(dataset, "rows", None), getattr(dataset, "id_column", None)
+    if rows is None or not isinstance(id_column, str):
+        return ()
+    return tuple(map(str, rows[id_column]))
 
 
 def split_fusion_cache(
-    scores: torch.Tensor, labels: torch.Tensor, fraction: float, seed: int
+    scores: torch.Tensor,
+    labels: torch.Tensor,
+    fraction: float,
+    seed: int,
+    image_ids: tuple[str, ...] = (),
 ) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
-    """Make deterministic, class-stratified calibration and selection sets."""
+    """Make a deterministic, family-disjoint calibration/selection split."""
     if not 0.0 < fraction < 1.0:
         raise ValueError("fusion calibration fraction must be strictly between 0 and 1")
-    calibration, selection = [], []
+    if image_ids and len(image_ids) != len(labels):
+        raise ValueError("Fusion image IDs do not match cached logits")
+    if any(int((labels == label).sum()) < 2 for label in (0.0, 1.0)):
+        raise ValueError("Fusion validation data needs at least two examples of each class")
+    groups: dict[str, list[int]] = {}
+    for index in range(len(labels)):
+        key = family_id(image_ids[index]) if image_ids else str(index)
+        groups.setdefault(key, []).append(index)
     generator = torch.Generator().manual_seed(seed)
-    for label in (0.0, 1.0):
-        indices = torch.where(labels == label)[0]
-        if len(indices) < 2:
-            raise ValueError("Fusion validation data needs at least two examples of each class")
-        shuffled = indices[torch.randperm(len(indices), generator=generator)]
-        split = min(len(indices) - 1, max(1, round(len(indices) * fraction)))
-        calibration.append(shuffled[:split])
-        selection.append(shuffled[split:])
-    calibration_indices, selection_indices = torch.cat(calibration), torch.cat(selection)
+    keys = list(groups)
+    ordered = torch.randperm(len(keys), generator=generator).tolist()
+    target = {label: round(int((labels == label).sum()) * fraction) for label in (0.0, 1.0)}
+    calibration_indices: list[int] = []
+    calibration_counts = {0.0: 0, 1.0: 0}
+    for order in ordered:
+        indices = groups[keys[order]]
+        counts = {label: sum(labels[index].item() == label for index in indices) for label in (0.0, 1.0)}
+        if any(calibration_counts[label] < target[label] and counts[label] for label in counts):
+            calibration_indices.extend(indices)
+            for label in counts:
+                calibration_counts[label] += counts[label]
+    selection_indices = sorted(set(range(len(labels))) - set(calibration_indices))
+    if not calibration_indices or not selection_indices:
+        raise ValueError("Fusion split leaves an empty calibration or selection set")
+    calibration_labels = labels[calibration_indices]
+    selection_labels = labels[selection_indices]
+    if set(calibration_labels.tolist()) != {0.0, 1.0} or set(selection_labels.tolist()) != {0.0, 1.0}:
+        raise ValueError("Fusion validation needs both classes in family-disjoint calibration and selection sets")
     return (scores[calibration_indices], labels[calibration_indices]), (scores[selection_indices], labels[selection_indices])
 
 
@@ -285,6 +335,38 @@ def load_state(
     return checkpoint
 
 
+def dino_from_checkpoint(
+    path: Path, device: torch.device, expected_stages: tuple[str, ...]
+) -> DINOClassifier:
+    """Rebuild DINO from the checkpoint's head configuration before loading."""
+    checkpoint = _checkpoint(path, device)
+    config = checkpoint.get("model_config")
+    if not isinstance(config, dict):
+        raise ValueError(f"{path} has no DINO model configuration")
+    dino = DINOClassifier(
+        model_name=config.get("model_name", "facebook/dinov2-small"),
+        revision=config.get("revision"),
+        hidden_dim=config.get("hidden_dim", 256),
+        dropout=config.get("dropout", 0.2),
+        freeze_backbone=True,
+    )
+    load_state(dino, path, device, expected_stages)
+    return dino
+
+
+def forensic_from_checkpoint(path: Path, device: torch.device) -> ForensicCNN:
+    """Rebuild the forensic model with its saved SRM clipping configuration."""
+    checkpoint = _checkpoint(path, device)
+    config = checkpoint.get("model_config")
+    if not isinstance(config, dict) or config.get("model_type") != "forensic_cnn":
+        raise ValueError(f"{path} has no forensic model configuration")
+    forensic = ForensicCNN(
+        dropout=config.get("dropout", 0.2), srm_clip_value=config.get("srm_clip_value")
+    )
+    load_state(forensic, path, device, ("forensic",))
+    return forensic
+
+
 def display_metric(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.4f}"
 
@@ -294,10 +376,9 @@ def build_model(args: argparse.Namespace, device: torch.device) -> tuple[nn.Modu
         dino = DINOClassifier(freeze_backbone=True)
         return dino, [{"params": dino.classifier.parameters(), "lr": args.head_lr}]
     if args.stage == "dino_finetune":
-        dino = DINOClassifier(freeze_backbone=True)
         if args.dino_checkpoint is None:
             raise ValueError("--dino-checkpoint is required for dino_finetune")
-        load_state(dino, args.dino_checkpoint, device, ("dino_head", "dino_finetune"))
+        dino = dino_from_checkpoint(args.dino_checkpoint, device, ("dino_head", "dino_finetune"))
         dino.unfreeze_last_blocks(args.unfreeze_blocks)
         backbone = [parameter for parameter in dino.backbone.parameters() if parameter.requires_grad]
         return dino, [
@@ -307,14 +388,10 @@ def build_model(args: argparse.Namespace, device: torch.device) -> tuple[nn.Modu
     if args.stage == "forensic":
         forensic = ForensicCNN(srm_clip_value=args.srm_clip_value)
         return forensic, [{"params": forensic.parameters(), "lr": args.forensic_lr}]
-    if args.fusion_mode == "fixed":
-        raise ValueError("fixed fusion is validation-selected, not trainable")
     if args.dino_checkpoint is None or args.forensic_checkpoint is None:
         raise ValueError("--dino-checkpoint and --forensic-checkpoint are required for fusion")
-    dino = DINOClassifier(freeze_backbone=True)
-    forensic = ForensicCNN(srm_clip_value=args.srm_clip_value)
-    load_state(dino, args.dino_checkpoint, device, ("dino_head", "dino_finetune"))
-    load_state(forensic, args.forensic_checkpoint, device, ("forensic",))
+    dino = dino_from_checkpoint(args.dino_checkpoint, device, ("dino_head", "dino_finetune"))
+    forensic = forensic_from_checkpoint(args.forensic_checkpoint, device)
     model = TwoBranchDetector(dino, forensic, fusion_mode="learned", dino_weight=args.dino_weight)
     model.freeze_branches()
     return model, [{"params": model.fusion.parameters(), "lr": args.fusion_lr}]
@@ -359,9 +436,26 @@ def make_scheduler(optimizer: torch.optim.Optimizer, args: argparse.Namespace):
 
 def _rng_state(train_loader: Iterable[Batch]) -> dict[str, Any]:
     generator = getattr(train_loader, "generator", None)
-    state: dict[str, Any] = {"torch": torch.get_rng_state()}
+    numpy_state = np.random.get_state()
+    state: dict[str, Any] = {
+        "python": random.getstate(),
+        "numpy": {
+            "algorithm": numpy_state[0],
+            "state": torch.from_numpy(numpy_state[1].copy()),
+            "position": numpy_state[2],
+            "has_gauss": numpy_state[3],
+            "cached_gaussian": numpy_state[4],
+        },
+        "torch": torch.get_rng_state(),
+    }
     if generator is not None:
         state["loader"] = generator.get_state()
+    augmentation = getattr(getattr(train_loader, "dataset", None), "augmentation", None)
+    if getattr(train_loader, "num_workers", 0) == 0 and augmentation is not None:
+        state["augmentation"] = {
+            "python": augmentation._rng.getstate(),
+            "numpy": augmentation._np_rng.bit_generator.state,
+        }
     if torch.cuda.is_available():
         state["cuda"] = torch.cuda.get_rng_state_all()
     return state
@@ -372,9 +466,27 @@ def restore_rng_state(state: Any, train_loader: Iterable[Batch]) -> None:
         return
     if isinstance(state.get("torch"), torch.Tensor):
         torch.set_rng_state(state["torch"])
+    if isinstance(state.get("python"), tuple):
+        random.setstate(state["python"])
+    numpy_state = state.get("numpy")
+    if isinstance(numpy_state, dict) and isinstance(numpy_state.get("state"), torch.Tensor):
+        np.random.set_state(
+            (
+                numpy_state["algorithm"],
+                numpy_state["state"].cpu().numpy(),
+                numpy_state["position"],
+                numpy_state["has_gauss"],
+                numpy_state["cached_gaussian"],
+            )
+        )
     generator = getattr(train_loader, "generator", None)
     if generator is not None and isinstance(state.get("loader"), torch.Tensor):
         generator.set_state(state["loader"])
+    augmentation = getattr(getattr(train_loader, "dataset", None), "augmentation", None)
+    augmentation_state = state.get("augmentation")
+    if augmentation is not None and isinstance(augmentation_state, dict):
+        augmentation._rng.setstate(augmentation_state["python"])
+        augmentation._np_rng.bit_generator.state = augmentation_state["numpy"]
     if torch.cuda.is_available() and isinstance(state.get("cuda"), list):
         torch.cuda.set_rng_state_all(state["cuda"])
 
@@ -413,8 +525,21 @@ def save_checkpoint(
     )
 
 
-def write_history(path: Path, epoch: int, train: Metrics, validation: Metrics, optimizer: torch.optim.Optimizer) -> None:
-    row = {"epoch": epoch, "train": train, "validation": validation, "learning_rates": [group["lr"] for group in optimizer.param_groups]}
+def write_history(
+    path: Path,
+    epoch: int,
+    train: Metrics,
+    validation: Metrics,
+    optimizer: torch.optim.Optimizer,
+    duration_seconds: float,
+) -> None:
+    row = {
+        "epoch": epoch,
+        "online_train": train,
+        "validation": validation,
+        "learning_rates": [group["lr"] for group in optimizer.param_groups],
+        "duration_seconds": duration_seconds,
+    }
     with path.open("a", encoding="utf-8") as output:
         output.write(json.dumps(row) + "\n")
 
@@ -442,6 +567,7 @@ def main() -> None:
         pin_memory=device.type == "cuda",
         augmentation_probability=args.augmentation_probability,
         second_augmentation_probability=args.second_augmentation_probability,
+        view="forensic" if args.stage == "forensic" else "dino" if args.stage.startswith("dino") else "both",
     )
     model, groups = build_model(args, device)
     model = model.to(device)
@@ -468,10 +594,15 @@ def main() -> None:
 
     cached_fusion: tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]] | None = None
     if args.stage == "fusion":
-        scores, labels = cache_fusion_logits(model, loaders.validation, device, args.max_validation_batches, amp=amp)
-        cached_fusion = split_fusion_cache(scores, labels, args.fusion_calibration_fraction, args.seed)
+        scores, labels, image_ids = cache_fusion_logits(
+            model, loaders.validation, device, args.max_validation_batches, amp=amp
+        )
+        cached_fusion = split_fusion_cache(
+            scores, labels, args.fusion_calibration_fraction, args.seed, image_ids
+        )
 
     for epoch in range(start_epoch, args.epochs + 1):
+        epoch_start = time.perf_counter()
         if cached_fusion is None:
             train_metrics = run_epoch(model, args.stage, loaders.train, device, optimizer, args.max_train_batches, scaler=scaler, grad_clip_norm=args.grad_clip_norm, amp=amp)
             validation = run_epoch(model, args.stage, loaders.validation, device, max_batches=args.max_validation_batches, amp=amp)
@@ -481,13 +612,22 @@ def main() -> None:
             validation = run_fusion_epoch(model, *selection, device, args.batch_size, amp=amp)
         if validation["auc"] is None:
             raise RuntimeError("Validation contains only one class; increase --max-validation-batches or inspect the split.")
-        print(f"epoch {epoch:02d} | train auc {display_metric(train_metrics['auc'])} | validation auc {display_metric(validation['auc'])}")
+        duration = time.perf_counter() - epoch_start
+        learning_rates = ", ".join(f"{group['lr']:.2e}" for group in optimizer.param_groups)
+        print(
+            f"epoch {epoch:02d} | train loss {train_metrics['loss']:.4f} | "
+            f"online train auc {display_metric(train_metrics['auc'])} | "
+            f"validation loss {validation['loss']:.4f} | "
+            f"validation accuracy {validation['accuracy']:.4f} | "
+            f"validation auc {display_metric(validation['auc'])} | "
+            f"lr {learning_rates} | {duration:.1f}s"
+        )
         improved = validation["auc"] > best_auc
         if improved:
             best_auc = validation["auc"]
         if scheduler is not None:
             scheduler.step()
-        write_history(history, epoch, train_metrics, validation, optimizer)
+        write_history(history, epoch, train_metrics, validation, optimizer, duration)
         save_checkpoint(
             checkpoint_dir / "last.pt", model, optimizer, epoch, validation, best_auc, args,
             scheduler=scheduler, scaler=scaler, train_loader=loaders.train,

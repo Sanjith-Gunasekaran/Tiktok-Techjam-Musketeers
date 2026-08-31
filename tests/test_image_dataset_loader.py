@@ -165,6 +165,27 @@ def test_branch_views_share_one_augmented_image(sid_like_dir):
     assert all(torch.equal(left, right) for left, right in zip(actual, expected))
 
 
+def test_single_view_dataset_avoids_the_other_branch(sid_like_dir):
+    source = _loader(sid_like_dir)
+
+    dino = BranchViewDataset(source, view="dino")[0]
+    patch = BranchViewDataset(source, view="forensic")[0]
+
+    assert set(dino) == {"dino", "label", "original_label"}
+    assert dino["dino"].shape == (3, 224, 224)
+    assert set(patch) == {"patch", "label", "original_label"}
+    assert patch["patch"].shape == (3, 32, 32)
+
+
+def test_single_view_dataloader_collates_dictionary_batches(sid_like_dir):
+    loaders = create_dataloaders(sid_like_dir, batch_size=2, view="forensic")
+
+    batch = next(iter(loaders.train))
+
+    assert set(batch) == {"patch", "label", "original_label"}
+    assert batch["patch"].shape == (2, 3, 32, 32)
+
+
 def test_dataloader_factory_builds_fixed_binary_splits(sid_like_dir):
     loaders = create_dataloaders(
         sid_like_dir,

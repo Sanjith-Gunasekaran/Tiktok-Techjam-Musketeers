@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple, TypedDict
 
 import torch
 from datasets import Dataset as HFDataset
@@ -21,11 +21,19 @@ from .augmentations import RandomAugment
 from .preprocess import two_views
 from .splits import TEST_FRACTION, split_dataset
 
+View = Literal["dino", "forensic", "both"]
 BranchSample = tuple[torch.Tensor, torch.Tensor, int, int]
 
 
+class SingleViewSample(TypedDict):
+    label: int
+    original_label: int
+    dino: torch.Tensor
+    patch: torch.Tensor
+
+
 class BranchViewDataset(Dataset[BranchSample]):
-    """Decode one row, augment once, then create both branch views."""
+    """Decode one row, augment once, then create requested branch views."""
 
     def __init__(
         self,
@@ -34,6 +42,7 @@ class BranchViewDataset(Dataset[BranchSample]):
         augmentation: Callable[[Image.Image], Image.Image] | None = None,
         partition: str | None = None,
         id_column: str | None = None,
+        view: View = "both",
     ) -> None:
         if source.transform is not None:
             raise ValueError("ImageDatasetLoader.transform must be None")
@@ -45,11 +54,14 @@ class BranchViewDataset(Dataset[BranchSample]):
         self.augmentation = augmentation
         self.partition = partition
         self.id_column = id_column
+        if view not in {"dino", "forensic", "both"}:
+            raise ValueError("view must be 'dino', 'forensic', or 'both'")
+        self.view = view
 
     def __len__(self) -> int:
         return len(self.rows)
 
-    def __getitem__(self, index: int) -> BranchSample:
+    def __getitem__(self, index: int) -> BranchSample | SingleViewSample:
         sample = self.source.normalise_sample(self.rows[index])
         image = sample["image"]
         if self.augmentation is not None:
@@ -62,8 +74,16 @@ class BranchViewDataset(Dataset[BranchSample]):
         if label not in (0, 1) or original_label is None:
             raise ValueError("Expected binary labels after SID-Set filtering")
 
-        dino_tensor, patch_tensor = two_views(image)
-        return dino_tensor, patch_tensor, int(label), int(original_label)
+        if self.view == "both":
+            dino_tensor, patch_tensor = two_views(image)
+            return dino_tensor, patch_tensor, int(label), int(original_label)
+        if self.view == "dino":
+            from .preprocess import dino_view
+
+            return {"dino": dino_view(image), "label": int(label), "original_label": int(original_label)}
+        from .preprocess import simplest_patch
+
+        return {"patch": simplest_patch(image), "label": int(label), "original_label": int(original_label)}
 
 
 class DataLoaderBundle(NamedTuple):
@@ -99,6 +119,7 @@ def create_dataloaders(
     id_column: str = "img_id",
     augmentation_probability: float = 0.5,
     second_augmentation_probability: float = 0.3,
+    view: View = "both",
     pin_memory: bool = False,
     drop_last: bool = False,
     config: str | None = None,
@@ -112,6 +133,7 @@ def create_dataloaders(
 
     Train uses the published training split. The published validation split is
     deterministically divided into development and frozen internal-test sets.
+    ``view`` avoids preprocessing the unused branch during single-branch runs.
     """
     if not isinstance(batch_size, int) or isinstance(batch_size, bool):
         raise TypeError("batch_size must be an integer")
@@ -163,18 +185,21 @@ def create_dataloaders(
         augmentation=augmentation,
         partition="train",
         id_column=id_column,
+        view=view,
     )
     validation_dataset = BranchViewDataset(
         validation_source,
         validation_rows,
         partition="validation",
         id_column=id_column,
+        view=view,
     )
     test_dataset = BranchViewDataset(
         validation_source,
         test_rows,
         partition="test",
         id_column=id_column,
+        view=view,
     )
 
     loader_options = {

@@ -33,6 +33,9 @@ for dino, patch, label, original_label in loaders.train:
     train_step(dino, patch, label)
 ```
 
+Single-branch training can pass `view="dino"` or `view="forensic"` to avoid
+building the unused input. The default `view="both"` is for fusion/evaluation.
+
 - Training: published train split; shuffled and randomly augmented each epoch.
 - Validation: fixed development subset; no augmentation or shuffle.
 - Test: fixed holdout from the published validation split; no augmentation or

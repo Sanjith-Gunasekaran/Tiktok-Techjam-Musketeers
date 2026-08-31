@@ -70,9 +70,10 @@ python -m model_runs.train --stage fusion --data-dir saberzl/SID_Set \
 
 Fusion is not trained on `loaders.train`: it runs the frozen branches once on
 the development-validation loader, caches their logits, and makes a seeded,
-class-stratified calibration/selection split. The learned layer fits the first
+family-disjoint calibration/selection split. The learned layer fits the first
 half and `best.pt` is selected on the other half. Neither operation touches the
-frozen test loader.
+frozen test loader. Each branch is rebuilt from its checkpoint configuration,
+including the forensic SRM clipping setting.
 
 Resume an interrupted run with the same stage and settings:
 
@@ -99,6 +100,8 @@ there is nothing left to train.
 - `--srm-clip-value 3.0` is the baseline. Measure clipping before changing it.
 - Lower `--batch-size` if GPU memory is exhausted; increase `--num-workers`
   only after confirming CPU loading is the bottleneck.
+- DINO stages build only DINO tensors; the forensic stage builds only simplest
+  patches. Fusion and final evaluation still build both views.
 - Keep checkpoint architecture settings consistent. The trainer rejects a
   wrong stage and rejects branch checkpoints with incompatible DINO/SRM setup.
 - Do not choose a model, fusion rule, or threshold from `loaders.test`.

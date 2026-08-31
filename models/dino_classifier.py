@@ -130,6 +130,7 @@ class DINOClassifier(nn.Module):
     def checkpoint_config(self) -> dict[str, object]:
         """Configuration training code should save beside ``state_dict``."""
         return {
+            "model_type": "dino_classifier",
             "model_name": self.model_name,
             "revision": self.revision,
             "backbone_state": self._backbone_state,
