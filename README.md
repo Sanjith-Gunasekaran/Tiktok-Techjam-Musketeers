@@ -258,6 +258,7 @@ from predict import choose_device, load_model
 DATA_DIR = "saberzl/SID_Set"  # or a local SID-Set directory
 CHECKPOINT = Path("model_runs/checkpoints/fusion/best.pt")
 REPORT_DIR = Path("reports/internal_test")
+FINAL_THRESHOLD = 0.4399200677871704
 
 device = choose_device("auto")
 loaders = create_dataloaders(
@@ -274,7 +275,7 @@ report = evaluate_model(
     model,
     loaders,
     output_dir=REPORT_DIR,
-    threshold=0.5,
+    threshold=FINAL_THRESHOLD,
     from_logits=True,
     device=device,
     save_predictions=True,
