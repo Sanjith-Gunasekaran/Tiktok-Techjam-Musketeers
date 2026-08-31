@@ -10,23 +10,29 @@ confidence score per image to JSON.
 
 ## Results
 
-The submitted model was trained on a 10 GB SID-Set subset and evaluated once
-on a separately sourced benchmark containing 5,000 COCO val2017 photographs
-and 8,843 WildFake DALL·E Advanced images.
+The submitted model was trained on a near-full SID-Set download (approximately
+130 GB on disk) in RunPod and evaluated once on a separately sourced benchmark
+containing 5,000 COCO val2017 photographs and 8,843 WildFake DALL·E Advanced
+images.
 
 | Metric | Result |
 | --- | ---: |
-| ROC AUC | **0.9200** |
-| Accuracy at 0.5 | 0.7756 |
-| Balanced accuracy | 0.8142 |
-| AIGC precision | 0.9623 |
-| AIGC recall | 0.6751 |
-| F1 | 0.7935 |
+| ROC AUC | **0.9548** |
+| Validation-selected threshold | 0.4399 |
+| Accuracy | 0.7471 |
+| Balanced accuracy | 0.7994 |
+| AIGC precision | 0.9888 |
+| AIGC recall | 0.6110 |
+| Real-image specificity | 0.9878 |
+| F1 | 0.7553 |
 
-The high precision and lower recall show that the 0.5 operating point is
-conservative. The submitted `pred` value is a continuous confidence score, so
-threshold-independent measures such as ROC AUC better represent its ranking
-quality.
+The threshold was selected on SID-Set validation and frozen before external
+evaluation. At that operating point the confusion matrix was 4,939 true
+negatives, 61 false positives, 3,440 false negatives, and 5,403 true
+positives. The high precision and specificity with lower recall show that the
+detector is conservative. The submitted `pred` value is a continuous
+confidence score, so threshold-independent measures such as ROC AUC better
+represent its ranking quality.
 
 ## Architecture
 
@@ -321,12 +327,13 @@ when `--device auto` is selected.
 
 ## Limitations
 
-- The reported checkpoint used a 10 GB subset rather than the complete
-  SID-Set training split.
+- The reported RunPod training corpus occupied approximately 130 GB on disk;
+  exact byte size can vary with the downloaded shard representation.
 - Internal validation is much easier than cross-source evaluation; the
-  external AUC fell from near-perfect internal values to 0.9200.
+  external AUC fell from near-perfect internal values to 0.9548.
 - Source-level JPEG history can remain after canonicalisation.
-- Recall at threshold 0.5 is lower than precision under external domain shift.
+- Recall at the frozen 0.4399 threshold is lower than precision under external
+  domain shift.
 - The binary model does not claim to detect partially manipulated images or
   localise edited regions.
 
