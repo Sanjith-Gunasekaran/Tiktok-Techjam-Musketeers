@@ -31,6 +31,7 @@ from pipeline import (
     evaluate_model,
     two_views,
 )
+from pipeline.splits import family_id
 
 
 def _png_bytes(seed):
@@ -195,10 +196,15 @@ def test_dataloader_factory_builds_fixed_binary_splits(sid_like_dir):
         test_fraction=0.5,
     )
     assert len(loaders.train.dataset) == 8
-    assert len(loaders.validation.dataset) + len(loaders.test.dataset) == 8
+    assert len(loaders.validation.dataset) + len(loaders.calibration.dataset) + len(loaders.test.dataset) == 8
     validation_ids = set(loaders.validation.dataset.rows["img_id"])
+    calibration_ids = set(loaders.calibration.dataset.rows["img_id"])
     test_ids = set(loaders.test.dataset.rows["img_id"])
     assert validation_ids.isdisjoint(test_ids)
+    assert calibration_ids.isdisjoint(validation_ids | test_ids)
+    assert {family_id(item) for item in calibration_ids}.isdisjoint(
+        {family_id(item) for item in validation_ids | test_ids}
+    )
 
     dino, patch, label, original_label = next(iter(loaders.train))
     assert dino.shape == (4, 3, 224, 224)

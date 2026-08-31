@@ -12,8 +12,8 @@ from model_runs.train import (
     parameter_groups,
     run_epoch,
     run_fusion_epoch,
+    require_binary_labels,
     save_checkpoint,
-    split_fusion_cache,
 )
 from models import ForensicCNN, TwoBranchDetector
 
@@ -67,10 +67,9 @@ def test_run_epoch_accepts_a_single_dino_view_batch() -> None:
     assert metrics["auc"] is not None
 
 
-def test_cached_fusion_uses_stratified_calibration_and_selection() -> None:
-    scores = torch.tensor([[-2.0, -1.0], [-1.0, -2.0], [1.0, 2.0], [2.0, 1.0]])
-    labels = torch.tensor([0.0, 0.0, 1.0, 1.0])
-    calibration, selection = split_fusion_cache(scores, labels, 0.5, seed=4)
+def test_cached_fusion_fits_and_scores_separate_logits() -> None:
+    calibration = (torch.tensor([[-2.0, -1.0], [1.0, 2.0]]), torch.tensor([0.0, 1.0]))
+    selection = (torch.tensor([[-1.0, -2.0], [2.0, 1.0]]), torch.tensor([0.0, 1.0]))
     model = TwoBranchDetector(nn.Identity(), nn.Identity(), fusion_mode="learned")
     model.freeze_branches()
     optimizer = torch.optim.SGD(model.fusion.parameters(), lr=0.1)
@@ -82,25 +81,9 @@ def test_cached_fusion_uses_stratified_calibration_and_selection() -> None:
     assert validation["auc"] is not None
 
 
-def test_cached_fusion_requires_two_examples_per_class() -> None:
-    with pytest.raises(ValueError, match="two examples"):
-        split_fusion_cache(torch.randn(3, 2), torch.tensor([0.0, 1.0, 1.0]), 0.5, seed=1)
-
-
-def test_cached_fusion_keeps_image_families_together() -> None:
-    scores = torch.tensor([[-2.0, -1.0], [2.0, 1.0], [-3.0, -1.0], [3.0, 1.0]])
-    labels = torch.tensor([0.0, 1.0, 0.0, 1.0])
-    calibration, selection = split_fusion_cache(
-        scores,
-        labels,
-        0.5,
-        seed=5,
-        image_ids=("real_a", "synthetic_a", "real_b", "synthetic_b"),
-    )
-
-    calibration_families = {abs(int(row[0].item())) for row in calibration[0]}
-    selection_families = {abs(int(row[0].item())) for row in selection[0]}
-    assert calibration_families.isdisjoint(selection_families)
+def test_fusion_cache_requires_both_classes() -> None:
+    with pytest.raises(RuntimeError, match="both classes"):
+        require_binary_labels(torch.tensor([1.0, 1.0]), "calibration")
 
 
 def test_parameter_groups_exclude_bias_and_normalization_from_decay() -> None:

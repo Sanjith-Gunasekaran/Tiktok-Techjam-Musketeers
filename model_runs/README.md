@@ -69,11 +69,11 @@ python -m model_runs.train --stage fusion --data-dir saberzl/SID_Set \
 ```
 
 Fusion is not trained on `loaders.train`: it runs the frozen branches once on
-the development-validation loader, caches their logits, and makes a seeded,
-family-disjoint calibration/selection split. The learned layer fits the first
-half and `best.pt` is selected on the other half. Neither operation touches the
-frozen test loader. Each branch is rebuilt from its checkpoint configuration,
-including the forensic SRM clipping setting.
+the dedicated family-disjoint calibration loader and caches their logits. The
+learned layer fits those scores; `best.pt` is selected on the separate
+validation loader. Neither operation touches the frozen test loader. Each
+branch is rebuilt from its checkpoint configuration, including the forensic
+SRM clipping setting.
 
 Resume an interrupted run with the same stage and settings:
 

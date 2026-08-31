@@ -19,7 +19,7 @@ from data_loader.image_dataset_loader import (
 
 from .augmentations import RandomAugment
 from .preprocess import two_views
-from .splits import TEST_FRACTION, split_dataset
+from .splits import CALIBRATION_FRACTION, TEST_FRACTION, split_calibration_dataset, split_dataset
 
 View = Literal["dino", "forensic", "both"]
 BranchSample = tuple[torch.Tensor, torch.Tensor, int, int]
@@ -90,6 +90,7 @@ class DataLoaderBundle(NamedTuple):
     train: DataLoader
     validation: DataLoader
     test: DataLoader
+    calibration: DataLoader
 
 
 def _seed_worker(worker_id: int) -> None:
@@ -116,6 +117,7 @@ def create_dataloaders(
     train_split: str = "train",
     validation_split: str = "validation",
     test_fraction: float = TEST_FRACTION,
+    calibration_fraction: float = CALIBRATION_FRACTION,
     id_column: str = "img_id",
     augmentation_probability: float = 0.5,
     second_augmentation_probability: float = 0.3,
@@ -131,8 +133,8 @@ def create_dataloaders(
 ) -> DataLoaderBundle:
     """Create shuffled train and fixed validation/test DataLoaders.
 
-    Train uses the published training split. The published validation split is
-    deterministically divided into development and frozen internal-test sets.
+    Train uses the published training split. Published validation is divided
+    into checkpoint-selection, fusion-calibration, and frozen-test families.
     ``view`` avoids preprocessing the unused branch during single-branch runs.
     """
     if not isinstance(batch_size, int) or isinstance(batch_size, bool):
@@ -145,6 +147,8 @@ def create_dataloaders(
         raise ValueError("num_workers cannot be negative")
     if not 0.0 < test_fraction < 1.0:
         raise ValueError("test_fraction must be strictly between 0 and 1")
+    if not 0.0 < calibration_fraction < 1.0:
+        raise ValueError("calibration_fraction must be strictly between 0 and 1")
 
     common = {
         "config": config,
@@ -165,15 +169,20 @@ def create_dataloaders(
     if id_column not in validation_source.dataset.column_names:
         raise ValueError(f"Validation split has no {id_column!r} column")
 
-    validation_rows, test_rows = split_dataset(
+    development_rows, test_rows = split_dataset(
         validation_source.dataset,
         id_column=id_column,
         fraction=test_fraction,
     )
+    validation_rows, calibration_rows = split_calibration_dataset(
+        development_rows,
+        id_column=id_column,
+        fraction=calibration_fraction,
+    )
     if not len(train_source.dataset):
         raise ValueError("Training split is empty after label filtering")
-    if not len(validation_rows) or not len(test_rows):
-        raise ValueError("Validation/test split is empty; use more data")
+    if not len(validation_rows) or not len(calibration_rows) or not len(test_rows):
+        raise ValueError("Validation, calibration, or test split is empty; use more data")
 
     augmentation = RandomAugment(
         probability=augmentation_probability,
@@ -198,6 +207,13 @@ def create_dataloaders(
         validation_source,
         test_rows,
         partition="test",
+        id_column=id_column,
+        view=view,
+    )
+    calibration_dataset = BranchViewDataset(
+        validation_source,
+        calibration_rows,
+        partition="calibration",
         id_column=id_column,
         view=view,
     )
@@ -226,6 +242,12 @@ def create_dataloaders(
             test_dataset,
             shuffle=False,
             generator=_generator(seed + 2),
+            **loader_options,
+        ),
+        calibration=DataLoader(
+            calibration_dataset,
+            shuffle=False,
+            generator=_generator(seed + 3),
             **loader_options,
         ),
     )

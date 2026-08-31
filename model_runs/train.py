@@ -22,7 +22,6 @@ if __package__ in {None, ""}:
 
 from models import DINOClassifier, ForensicCNN, TwoBranchDetector
 from pipeline import binary_auc, create_dataloaders
-from pipeline.splits import family_id
 
 Batch = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | Mapping[str, torch.Tensor]
 Metrics = dict[str, float | None]
@@ -58,7 +57,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--srm-clip-value", type=float, default=3.0)
     parser.add_argument("--fusion-mode", choices=("learned",), default="learned")
     parser.add_argument("--dino-weight", type=float, default=0.5)
-    parser.add_argument("--fusion-calibration-fraction", type=float, default=0.5)
     parser.add_argument("--max-train-batches", type=int)
     parser.add_argument("--max-validation-batches", type=int)
     return parser.parse_args()
@@ -190,12 +188,10 @@ def cache_fusion_logits(
     max_batches: int | None,
     *,
     amp: bool,
-) -> tuple[torch.Tensor, torch.Tensor, tuple[str, ...]]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Run frozen branches once over validation and keep their two logits."""
     model.eval()
     scores, labels_all = [], []
-    image_ids = _batch_image_ids(batches)
-    used = 0
     for batch_index, batch in enumerate(batches):
         if max_batches is not None and batch_index >= max_batches:
             break
@@ -208,59 +204,14 @@ def cache_fusion_logits(
             )
         scores.append(torch.stack((dino_logits.float().cpu(), forensic_logits.float().cpu()), dim=1))
         labels_all.append(labels.to(torch.float32).cpu())
-        used += len(labels)
     if not scores:
         raise ValueError("Cannot fit fusion with an empty validation DataLoader")
-    return torch.cat(scores), torch.cat(labels_all), image_ids[:used]
+    return torch.cat(scores), torch.cat(labels_all)
 
 
-def _batch_image_ids(batches: Iterable[Batch]) -> tuple[str, ...]:
-    dataset = getattr(batches, "dataset", None)
-    rows, id_column = getattr(dataset, "rows", None), getattr(dataset, "id_column", None)
-    if rows is None or not isinstance(id_column, str):
-        return ()
-    return tuple(map(str, rows[id_column]))
-
-
-def split_fusion_cache(
-    scores: torch.Tensor,
-    labels: torch.Tensor,
-    fraction: float,
-    seed: int,
-    image_ids: tuple[str, ...] = (),
-) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
-    """Make a deterministic, family-disjoint calibration/selection split."""
-    if not 0.0 < fraction < 1.0:
-        raise ValueError("fusion calibration fraction must be strictly between 0 and 1")
-    if image_ids and len(image_ids) != len(labels):
-        raise ValueError("Fusion image IDs do not match cached logits")
-    if any(int((labels == label).sum()) < 2 for label in (0.0, 1.0)):
-        raise ValueError("Fusion validation data needs at least two examples of each class")
-    groups: dict[str, list[int]] = {}
-    for index in range(len(labels)):
-        key = family_id(image_ids[index]) if image_ids else str(index)
-        groups.setdefault(key, []).append(index)
-    generator = torch.Generator().manual_seed(seed)
-    keys = list(groups)
-    ordered = torch.randperm(len(keys), generator=generator).tolist()
-    target = {label: round(int((labels == label).sum()) * fraction) for label in (0.0, 1.0)}
-    calibration_indices: list[int] = []
-    calibration_counts = {0.0: 0, 1.0: 0}
-    for order in ordered:
-        indices = groups[keys[order]]
-        counts = {label: sum(labels[index].item() == label for index in indices) for label in (0.0, 1.0)}
-        if any(calibration_counts[label] < target[label] and counts[label] for label in counts):
-            calibration_indices.extend(indices)
-            for label in counts:
-                calibration_counts[label] += counts[label]
-    selection_indices = sorted(set(range(len(labels))) - set(calibration_indices))
-    if not calibration_indices or not selection_indices:
-        raise ValueError("Fusion split leaves an empty calibration or selection set")
-    calibration_labels = labels[calibration_indices]
-    selection_labels = labels[selection_indices]
-    if set(calibration_labels.tolist()) != {0.0, 1.0} or set(selection_labels.tolist()) != {0.0, 1.0}:
-        raise ValueError("Fusion validation needs both classes in family-disjoint calibration and selection sets")
-    return (scores[calibration_indices], labels[calibration_indices]), (scores[selection_indices], labels[selection_indices])
+def require_binary_labels(labels: torch.Tensor, partition: str) -> None:
+    if set(labels.tolist()) != {0.0, 1.0}:
+        raise RuntimeError(f"Fusion {partition} partition must contain both classes")
 
 
 def run_fusion_epoch(
@@ -594,12 +545,15 @@ def main() -> None:
 
     cached_fusion: tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]] | None = None
     if args.stage == "fusion":
-        scores, labels, image_ids = cache_fusion_logits(
+        calibration = cache_fusion_logits(
+            model, loaders.calibration, device, args.max_validation_batches, amp=amp
+        )
+        selection = cache_fusion_logits(
             model, loaders.validation, device, args.max_validation_batches, amp=amp
         )
-        cached_fusion = split_fusion_cache(
-            scores, labels, args.fusion_calibration_fraction, args.seed, image_ids
-        )
+        require_binary_labels(calibration[1], "calibration")
+        require_binary_labels(selection[1], "selection")
+        cached_fusion = calibration, selection
 
     for epoch in range(start_epoch, args.epochs + 1):
         epoch_start = time.perf_counter()

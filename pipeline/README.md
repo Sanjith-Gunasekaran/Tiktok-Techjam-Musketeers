@@ -37,7 +37,8 @@ Single-branch training can pass `view="dino"` or `view="forensic"` to avoid
 building the unused input. The default `view="both"` is for fusion/evaluation.
 
 - Training: published train split; shuffled and randomly augmented each epoch.
-- Validation: fixed development subset; no augmentation or shuffle.
+- Validation: fixed family-disjoint subset for checkpoint and threshold selection.
+- Calibration: fixed family-disjoint subset used only to fit fusion scores.
 - Test: fixed holdout from the published validation split; no augmentation or
   shuffle. Do not use `loaders.test` while choosing models or thresholds.
 - Tampered rows are discarded. Labels are `0` real and `1` fully synthetic.
