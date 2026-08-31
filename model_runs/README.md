@@ -75,6 +75,17 @@ validation loader. Neither operation touches the frozen test loader. Each
 branch is rebuilt from its checkpoint configuration, including the forensic
 SRM clipping setting.
 
+For interpretable fixed fusion, calibrate rather than train a layer:
+
+```bash
+python -m model_runs.calibrate_fusion --data-dir saberzl/SID_Set \
+  --dino-checkpoint model_runs/checkpoints/dino_finetune/best.pt \
+  --forensic-checkpoint model_runs/checkpoints/forensic/best.pt
+```
+
+It searches fixed DINO weights on validation AUC, calibrates the probability
+threshold on the separate calibration partition, and writes `fusion/fixed.json`.
+
 Resume an interrupted run with the same stage and settings:
 
 ```bash
