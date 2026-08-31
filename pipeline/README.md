@@ -73,3 +73,17 @@ model for clean and every fixed transform, and writes:
 
 Choose the checkpoint and threshold on validation first. The test report is a
 single final measurement, not cross-validation.
+
+## Visual transformation preview
+
+Create a labelled grid showing the exact deterministic transformations used
+by the robustness evaluator:
+
+```bash
+python -m pipeline.preview_augmentations path/to/image.jpg \
+  --output reports/augmentation_preview.jpg
+```
+
+The preview uses `EVAL_GRID` directly, so its transformations cannot drift
+from the clean-versus-transformed evaluation. It is useful for validating
+inputs and for demonstrating robustness conditions in the project video.
